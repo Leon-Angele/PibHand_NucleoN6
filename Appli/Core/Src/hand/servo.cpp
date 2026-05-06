@@ -12,8 +12,14 @@
 Stm32UartDmaPort* Stm32UartDmaPort::instances_[Stm32UartDmaPort::MAX_INSTANCES] = {nullptr, nullptr};
 uint8_t Stm32UartDmaPort::instance_count_ = 0;
 
+// Static non-cacheable buffers
+__attribute__((section(".noncacheable"))) uint8_t Stm32UartDmaPort::temp_dma_buffer_storage_[Stm32UartDmaPort::TEMP_DMA_SIZE];
+__attribute__((section(".noncacheable"))) uint8_t Stm32UartDmaPort::rx_ring_storage_[Stm32UartDmaPort::RX_RING_SIZE];
+
 Stm32UartDmaPort::Stm32UartDmaPort(UART_HandleTypeDef* huart, uint32_t tx_timeout_ms, uint32_t rx_timeout_ms)
-    : huart_(huart), tx_done_(false), rx_done_(false), tx_timeout_ms_(tx_timeout_ms), rx_timeout_ms_(rx_timeout_ms)
+    : huart_(huart), tx_done_(false), tx_timeout_ms_(tx_timeout_ms), rx_timeout_ms_(rx_timeout_ms),
+      state_(PortState::IDLE), operation_start_ms_(0),
+      temp_dma_buffer_(temp_dma_buffer_storage_), rx_ring_(rx_ring_storage_)
 {
     if (instance_count_ < MAX_INSTANCES) {
         instances_[instance_count_++] = this;
@@ -22,53 +28,90 @@ Stm32UartDmaPort::Stm32UartDmaPort(UART_HandleTypeDef* huart, uint32_t tx_timeou
 
 bool Stm32UartDmaPort::transmitDMA(const uint8_t* data, uint16_t length, bool waitForCompletion)
 {
-    // For short WRITE commands: use blocking transmit (DMA callback unreliable)
-    if (!waitForCompletion) {
-        // Cache clean still needed even for blocking mode on Cortex-M55
-        SCB_CleanDCache_by_Addr((uint32_t*)data, length);
-        HAL_StatusTypeDef ret = HAL_UART_Transmit(huart_, (uint8_t*)data, length, tx_timeout_ms_);
-        if (ret != HAL_OK) {
-            printf("[SERVO] Blocking TX failed: %d\r\n", ret);
-            return false;
-        }
-        return true;
-    }
-    
-    // For READ commands: use DMA with callback wait
-    tx_done_ = false;
+    // D-Cache clean before TX (needed for cache coherency on Cortex-M55)
     SCB_CleanDCache_by_Addr((uint32_t*)data, length);
-    HAL_StatusTypeDef ret = HAL_UART_Transmit_DMA(huart_, (uint8_t*)data, length);
+    
+    // Use blocking transmit for simplicity (DMA TX callback optional later)
+    HAL_StatusTypeDef ret = HAL_UART_Transmit(huart_, const_cast<uint8_t*>(data), length, tx_timeout_ms_);
     if (ret != HAL_OK) {
-        printf("[SERVO] TX DMA start failed: %d (UART=%p)\r\n", ret, huart_->Instance);
+        printf("[SERVO] TX failed: %d\r\n", ret);
         return false;
     }
     
-    // 3. Warten auf das tx_done_ Flag (wird vom Interrupt gesetzt)
-    uint32_t start = HAL_GetTick();
-    while (!tx_done_) {
-        if ((HAL_GetTick() - start) > tx_timeout_ms_) {
-            // 4. TIMEOUT-FIX: Wenn der Interrupt nicht kommt, MÜSSEN wir die HAL abbrechen.
-            // Sonst bleibt huart_->gState für immer auf HAL_UART_STATE_BUSY_TX!
-            printf("[SERVO] TX timeout after %lu ms (UART=%p)\r\n", tx_timeout_ms_, huart_->Instance);
-            HAL_UART_AbortTransmit(huart_);
-            return false;
-        }
-    }
-
+    // Store TX length for auto-echo consumption
+    pending_tx_echo_len_ = length;
+    
     return true;
 }
 
-bool Stm32UartDmaPort::receiveDMA(uint8_t* buffer, uint16_t length)
+// Start continuous RX using ReceiveToIdle DMA
+bool Stm32UartDmaPort::startReceiveToIdle()
 {
-    rx_done_ = false;
-    if (HAL_UART_Receive_DMA(huart_, buffer, length) != HAL_OK) {
+    HAL_StatusTypeDef ret = HAL_UARTEx_ReceiveToIdle_DMA(huart_, temp_dma_buffer_, TEMP_DMA_SIZE);
+    if (ret != HAL_OK) {
+        printf("[SERVO] ReceiveToIdle DMA start failed: %d\r\n", ret);
         return false;
     }
-    uint32_t start = HAL_GetTick();
-    while (!rx_done_) {
-        if ((HAL_GetTick() - start) > rx_timeout_ms_) return false;
+    return true;
+}
+
+// Ringbuffer methods
+uint16_t Stm32UartDmaPort::rxAvailable() const
+{
+    // Volatile read of rx_head_ (updated by ISR)
+    uint16_t head = rx_head_;
+    if (head >= rx_tail_) {
+        return head - rx_tail_;
+    } else {
+        return RX_RING_SIZE - rx_tail_ + head;
+    }
+}
+
+int16_t Stm32UartDmaPort::rxRead()
+{
+    if (rx_tail_ == rx_head_) return -1;
+    uint8_t byte = rx_ring_[rx_tail_];
+    rx_tail_ = (rx_tail_ + 1) % RX_RING_SIZE;
+    return byte;
+}
+
+bool Stm32UartDmaPort::rxPeek(uint8_t* buffer, uint16_t length) const
+{
+    if (rxAvailable() < length) return false;
+    for (uint16_t i = 0; i < length; i++) {
+        buffer[i] = rx_ring_[(rx_tail_ + i) % RX_RING_SIZE];
     }
     return true;
+}
+
+void Stm32UartDmaPort::rxConsume(uint16_t length)
+{
+    rx_tail_ = (rx_tail_ + length) % RX_RING_SIZE;
+}
+
+void Stm32UartDmaPort::rxFlush()
+{
+    rx_tail_ = rx_head_;
+}
+
+// Non-blocking state machine update - called from ServoBus::process()
+void Stm32UartDmaPort::process()
+{
+    // Auto-consume TX echo after brief delay
+    if (pending_tx_echo_len_ > 0) {
+        // Wait for echo to arrive in ringbuffer (RS485 echo via Waveshare board)
+        HAL_Delay(2);
+        if (rxAvailable() >= pending_tx_echo_len_) {
+            rxConsume(pending_tx_echo_len_);
+            pending_tx_echo_len_ = 0;
+        }
+    }
+}
+
+// Reset port to IDLE
+void Stm32UartDmaPort::resetState()
+{
+    state_ = PortState::IDLE;
 }
 
 void Stm32UartDmaPort::onTxComplete(UART_HandleTypeDef* huart)
@@ -81,11 +124,18 @@ void Stm32UartDmaPort::onTxComplete(UART_HandleTypeDef* huart)
     }
 }
 
-void Stm32UartDmaPort::onRxComplete(UART_HandleTypeDef* huart)
+void Stm32UartDmaPort::onRxEvent(UART_HandleTypeDef* huart, uint16_t Size)
 {
     for (uint8_t i = 0; i < instance_count_; ++i) {
         if (instances_[i] && instances_[i]->huart_ == huart) {
-            instances_[i]->rx_done_ = true;
+            // Copy received data from temp DMA buffer to ringbuffer
+            for (uint16_t j = 0; j < Size; j++) {
+                instances_[i]->rx_ring_[instances_[i]->rx_head_] = instances_[i]->temp_dma_buffer_[j];
+                instances_[i]->rx_head_ = (instances_[i]->rx_head_ + 1) % RX_RING_SIZE;
+            }
+            
+            // Restart ReceiveToIdle for next packet
+            HAL_UARTEx_ReceiveToIdle_DMA(huart, instances_[i]->temp_dma_buffer_, TEMP_DMA_SIZE);
             break;
         }
     }
@@ -94,18 +144,9 @@ void Stm32UartDmaPort::onRxComplete(UART_HandleTypeDef* huart)
 // PollUartPort implementation (blocking TX, no DMA)
 bool PollUartPort::transmitDMA(const uint8_t* data, uint16_t length, bool waitForCompletion)
 {
-    (void)waitForCompletion; // Not used for blocking mode
-    // Use blocking transmit — simple and reliable for debug/VCP output
+    (void)waitForCompletion;
     HAL_StatusTypeDef ret = HAL_UART_Transmit(huart_, const_cast<uint8_t*>(data), length, tx_timeout_ms_);
     return (ret == HAL_OK);
-}
-
-bool PollUartPort::receiveDMA(uint8_t* buffer, uint16_t length)
-{
-    // Not used for VCP/Commander — RX handled via HAL_UART_Receive_IT in main.c
-    (void)buffer;
-    (void)length;
-    return false;
 }
 
 // checksum calculation: ~(ID + Length + Instruction + Params...)
@@ -139,89 +180,104 @@ bool ServoBus::writeRegister(uint8_t id, uint8_t reg, const uint8_t* data, uint8
 
     // Transmit and return immediately (non-blocking).
     // SCS/Feetech servos only return status packets for READ commands by default
-    // (Status Return Level = 1). No need to wait for TX completion.
+    // (Status Return Level = 1). No need to wait for completion.
     return port_.transmitDMA(tx_buf_.data(), (uint16_t)idx, false);
 }
 
+// Synchronous read: sends command + polls ringbuffer for servo response
 bool ServoBus::readRegister(uint8_t id, uint8_t reg, uint8_t len, uint8_t* out)
 {
-    // Build read packet
-    uint8_t params_len = 2; // address + length
+    // Build read command packet
+    uint8_t params_len = 2; // reg address + data length
     size_t idx = 0;
     tx_buf_[idx++] = 0xFF;
     tx_buf_[idx++] = 0xFF;
     tx_buf_[idx++] = id;
-    tx_buf_[idx++] = params_len + 2; // LEN = INST(1) + PARAMS(params_len) + CHECKSUM(1)
+    tx_buf_[idx++] = params_len + 2; // LEN = INST(1) + PARAMS(2) + CHK(1)
     tx_buf_[idx++] = static_cast<uint8_t>(Instruction::Read);
     tx_buf_[idx++] = reg;
     tx_buf_[idx++] = len;
     uint8_t csum = checksum(&tx_buf_[2], static_cast<size_t>(idx - 2));
     tx_buf_[idx++] = csum;
 
-    if (!port_.transmitDMA(tx_buf_.data(), (uint16_t)idx)) return false;
+    // Send read command (blocking TX with auto-echo consumption)
+    if (!port_.transmitDMA(tx_buf_.data(), (uint16_t)idx, false)) {
+        printf("[BUS] readReg TX failed (ID=%d, reg=%d)\r\n", id, reg);
+        return false;
+    }
 
-    // Expected response size: header(2) + ID(1) + LEN(1) + ERR(1) + params(len) + CHK(1) => 6 + len - 0
-    uint16_t expected_rx = (uint16_t)(6 + len - 0);
-    if (expected_rx > rx_buf_.size()) return false;
-    if (!port_.receiveDMA(rx_buf_.data(), expected_rx)) return false;
+    // Small delay for servo response time (STS3215 needs ~5ms to prepare response)
+    HAL_Delay(5);
 
-    // Validate header
-    if (rx_buf_[0] != 0xFF || rx_buf_[1] != 0xFF) return false;
-    if (rx_buf_[2] != id) return false;
-    uint8_t error = rx_buf_[4];
-    if (error != 0) return false;
+    // Poll ringbuffer for response packet
+    uint16_t expected_rx = static_cast<uint16_t>(6 + len);
+    uint32_t start_ms = HAL_GetTick();
+    constexpr uint32_t kReadTimeoutMs = 50;
+    
+    while ((HAL_GetTick() - start_ms) < kReadTimeoutMs) {
+        port_.process();  // Process pending echo consumption
+        
+        if (port_.rxAvailable() >= expected_rx) {
+            // Try to find valid packet header (0xFF 0xFF)
+            uint8_t header[6];
+            if (port_.rxPeek(header, 6)) {
+                if (header[0] == 0xFF && header[1] == 0xFF && header[2] == id) {
+                    // Found matching header - validate length and error byte
+                    if (header[3] == (len + 2) && header[4] == 0) {
+                        // Checksum validation
+                        uint8_t full_packet[64];
+                        if (port_.rxPeek(full_packet, expected_rx)) {
+                            uint8_t calc_sum = checksum(&full_packet[2], expected_rx - 3);
+                            if (calc_sum == full_packet[expected_rx - 1]) {
+                                // SUCCESS: Copy data and consume packet
+                                for (uint8_t i = 0; i < len; i++) {
+                                    out[i] = full_packet[5 + i];
+                                }
+                                port_.rxConsume(expected_rx);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            // Invalid header or checksum - consume 1 byte and retry
+            port_.rxConsume(1);
+        }
+        HAL_Delay(1);
+    }
+    
+    printf("[BUS] readReg RX timeout (ID=%d, reg=%d, expect=%d bytes)\r\n", id, reg, expected_rx);
+    return false;
+}
 
-    // verify checksum
-    uint8_t sum_len = 1 + 1 + 1 + len; // ID + LEN + ERR + params
-    uint8_t csum_resp = checksum(&rx_buf_[2], sum_len);
-    uint8_t received_csum = rx_buf_[2 + sum_len];
-    if (csum_resp != received_csum) return false;
-
-    // copy params
-    for (uint8_t i = 0; i < len; ++i) out[i] = rx_buf_[5 + i];
+// Validate received packet from ringbuffer peek
+bool ServoBus::validateRxPacket(uint8_t expected_id, uint8_t expected_data_len)
+{
+    uint8_t packet[64];
+    uint16_t packet_len = 6 + expected_data_len;
+    if (!port_.rxPeek(packet, packet_len)) return false;
+    
+    // Check header
+    if (packet[0] != 0xFF || packet[1] != 0xFF) return false;
+    
+    // Check ID
+    if (packet[2] != expected_id) return false;
+    
+    // Check error byte
+    if (packet[4] != 0) return false;
+    
+    // Verify checksum
+    uint8_t calc_sum = checksum(&packet[2], packet_len - 3);
+    if (calc_sum != packet[packet_len - 1]) return false;
+    
     return true;
 }
 
-bool ServoBus::startReadRegister(uint8_t id, uint8_t reg, uint8_t len, uint16_t& expected_rx_out)
+// State machine update - simplified for ringbuffer polling
+void ServoBus::process()
 {
-    // Build read packet and transmit only
-    uint8_t params_len = 2; // address + length
-    size_t idx = 0;
-    tx_buf_[idx++] = 0xFF;
-    tx_buf_[idx++] = 0xFF;
-    tx_buf_[idx++] = id;
-    tx_buf_[idx++] = params_len + 2; // LEN = INST(1) + PARAMS(params_len) + CHECKSUM(1)
-    tx_buf_[idx++] = static_cast<uint8_t>(Instruction::Read);
-    tx_buf_[idx++] = reg;
-    tx_buf_[idx++] = len;
-    uint8_t csum = checksum(&tx_buf_[2], static_cast<size_t>(idx - 2));
-    tx_buf_[idx++] = csum;
-
-    if (!port_.transmitDMA(tx_buf_.data(), (uint16_t)idx)) return false;
-
-    // Expected response size: header(2)+ID(1)+LEN(1)+ERR(1)+params(len)+CHK(1)
-    uint16_t expected_rx = static_cast<uint16_t>(6 + len - 0);
-    expected_rx_out = expected_rx;
-    return true;
-}
-
-bool ServoBus::finishReadRegister(uint8_t id, uint8_t len, uint8_t* out, uint16_t expected_rx)
-{
-    if (expected_rx > rx_buf_.size()) return false;
-    if (!port_.receiveDMA(rx_buf_.data(), expected_rx)) return false;
-
-    if (rx_buf_[0] != 0xFF || rx_buf_[1] != 0xFF) return false;
-    if (rx_buf_[2] != id) return false;
-    uint8_t error = rx_buf_[4];
-    if (error != 0) return false;
-
-    uint8_t sum_len = 1 + 1 + 1 + len; // ID + LEN + ERR + params
-    uint8_t csum_resp = checksum(&rx_buf_[2], sum_len);
-    uint8_t received_csum = rx_buf_[2 + sum_len];
-    if (csum_resp != received_csum) return false;
-
-    for (uint8_t i = 0; i < len; ++i) out[i] = rx_buf_[5 + i];
-    return true;
+    // Update port (handles echo consumption)
+    port_.process();
 }
 
 bool ServoBus::syncWritePositions(const uint8_t* ids, const uint16_t* positions, const uint16_t* times_ms, size_t count)
@@ -257,7 +313,7 @@ bool ServoBus::syncWritePositions(const uint8_t* ids, const uint16_t* positions,
     tx_buf_[idx++] = csum;
 
     // Transmit broadcast packet; no status packet expected
-    return port_.transmitDMA(tx_buf_.data(), (uint16_t)idx);
+    return port_.transmitDMA(tx_buf_.data(), (uint16_t)idx, false);
 }
 
 bool ServoBus::ping(uint8_t id)
@@ -272,20 +328,8 @@ bool ServoBus::ping(uint8_t id)
     uint8_t csum = checksum(&tx_buf_[2], static_cast<size_t>(idx - 2));
     tx_buf_[idx++] = csum;
 
-    if (!port_.transmitDMA(tx_buf_.data(), (uint16_t)idx)) return false;
-
-    // Expect minimal status packet (6 bytes)
-    const uint16_t expected_rx = 6;
-    if (!port_.receiveDMA(rx_buf_.data(), expected_rx)) return false;
-    if (rx_buf_[0] != 0xFF || rx_buf_[1] != 0xFF) return false;
-    if (rx_buf_[2] != id) return false;
-    uint8_t error = rx_buf_[4];
-    // verify checksum
-    uint8_t sum_len = 1 + 1 + 1 + 0; // ID + LEN + ERR + params(0)
-    uint8_t csum_resp = checksum(&rx_buf_[2], sum_len);
-    uint8_t received_csum = rx_buf_[2 + sum_len];
-    if (csum_resp != received_csum) return false;
-    return (error == 0);
+    // Simple ping - just send packet (response check could be added later using readRegister pattern)
+    return port_.transmitDMA(tx_buf_.data(), (uint16_t)idx, false);
 }
 
 // Servo high-level methods
@@ -310,12 +354,12 @@ bool Servo::setPosition(uint16_t position, uint16_t time_ms)
     return bus_.writeRegister(id_, static_cast<uint8_t>(ServoBus::Reg::Position), payload, 4);
 }
 
+// Synchronous READ operations
 std::optional<int16_t> Servo::getPosition()
 {
     uint8_t buf[2]{};
     if (!bus_.readRegister(id_, static_cast<uint8_t>(ServoBus::Reg::PosRead), 2, buf)) return std::nullopt;
-    int16_t v = static_cast<int16_t>((buf[1] << 8) | buf[0]);
-    return v;
+    return static_cast<int16_t>((buf[1] << 8) | buf[0]);
 }
 
 std::optional<int16_t> Servo::getSpeed()

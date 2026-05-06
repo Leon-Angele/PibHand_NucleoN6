@@ -46,6 +46,8 @@ CACHEAXI_HandleTypeDef hcacheaxi;
 
 UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef handle_GPDMA1_Channel1;
+DMA_HandleTypeDef handle_GPDMA1_Channel0;
 
 RAMCFG_HandleTypeDef hramcfg_SRAM3;
 RAMCFG_HandleTypeDef hramcfg_SRAM4;
@@ -60,6 +62,7 @@ static uint32_t rx_count = 0;
 
 /* Private function prototypes -----------------------------------------------*/
 static void MX_GPIO_Init(void);
+static void MX_GPDMA1_Init(void);
 static void MX_CACHEAXI_Init(void);
 static void MX_RAMCFG_Init(void);
 static void MX_USART3_UART_Init(void);
@@ -106,6 +109,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_GPDMA1_Init();
   MX_CACHEAXI_Init();
   MX_RAMCFG_Init();
   MX_USART3_UART_Init();
@@ -168,6 +172,36 @@ static void MX_CACHEAXI_Init(void)
   /* USER CODE BEGIN CACHEAXI_Init 2 */
 
   /* USER CODE END CACHEAXI_Init 2 */
+
+}
+
+/**
+  * @brief GPDMA1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPDMA1_Init(void)
+{
+
+  /* USER CODE BEGIN GPDMA1_Init 0 */
+
+  /* USER CODE END GPDMA1_Init 0 */
+
+  /* Peripheral clock enable */
+  __HAL_RCC_GPDMA1_CLK_ENABLE();
+
+  /* GPDMA1 interrupt Init */
+    HAL_NVIC_SetPriority(GPDMA1_Channel0_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(GPDMA1_Channel0_IRQn);
+    HAL_NVIC_SetPriority(GPDMA1_Channel1_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(GPDMA1_Channel1_IRQn);
+
+  /* USER CODE BEGIN GPDMA1_Init 1 */
+
+  /* USER CODE END GPDMA1_Init 1 */
+  /* USER CODE BEGIN GPDMA1_Init 2 */
+
+  /* USER CODE END GPDMA1_Init 2 */
 
 }
 
@@ -337,6 +371,18 @@ static void MX_RAMCFG_Init(void)
 
   /* RIF-Aware IPs Config */
 
+  /* set up GPDMA configuration */
+  /* set GPDMA1 channel 0 used by USART3 */
+  if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel0,DMA_CHANNEL_SEC|DMA_CHANNEL_PRIV|DMA_CHANNEL_SRC_SEC|DMA_CHANNEL_DEST_SEC)!= HAL_OK )
+  {
+    Error_Handler();
+  }
+  /* set GPDMA1 channel 1 used by USART3 */
+  if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel1,DMA_CHANNEL_SEC|DMA_CHANNEL_PRIV|DMA_CHANNEL_SRC_SEC|DMA_CHANNEL_DEST_SEC)!= HAL_OK )
+  {
+    Error_Handler();
+  }
+
   /* set up GPIO configuration */
   HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_11,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
   HAL_GPIO_ConfigPinAttributes(GPIOB,GPIO_PIN_0,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
@@ -394,19 +440,16 @@ static void MX_GPIO_Init(void)
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-    // Only LPUART1 uses this (for future use)
-    // USART3 uses blocking mode now
+    // USART3 (servo bus): DMA TX completion routed to Stm32UartDmaPort
+    // LPUART1 (VCP): uses blocking TX, no callback needed
     bridge_on_uart_tx(huart);
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance == USART3)
+  if (huart->Instance == LPUART1)
   {
-    bridge_on_uart_rx(huart);
-  }
-  else if (huart->Instance == LPUART1)
-  {
+    // LPUART1 (VCP): interrupt-based RX for serial commander
     rx_count++;
     commander_bridge_feed_byte(vcp_rx_byte);
     HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);

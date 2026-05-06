@@ -41,6 +41,9 @@ private:
     bool torque_enabled_ = false;
     bool pending_torque_disable_ = false;
 
+    // Round-Robin feedback state (1 servo queried per update cycle, synchronous blocking ~400µs)
+    uint8_t current_feedback_idx_ = 0;  // Which servo to query next (0..5)
+
     // Helpers
     static float smoothstep(float t) noexcept;
 

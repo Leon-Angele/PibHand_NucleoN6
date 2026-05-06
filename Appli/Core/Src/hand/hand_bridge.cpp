@@ -17,9 +17,9 @@ extern UART_HandleTypeDef hlpuart1;  // VCP
 // C executor callback pointer
 static hand_grip_executor_t c_executor_cb = nullptr;
 
-// Default C++ objects - beide UARTs nutzen jetzt blocking mode (kein DMA)
-static PollUartPort servoPort(&huart3, 100);   // USART3 for servo bus (blocking TX/RX, 100ms timeout)
-static PollUartPort vpcPort(&hlpuart1, 1000);  // LPUART1 for VCP (blocking TX, IT RX)
+// DMA-based async servo port + blocking VCP port
+static Stm32UartDmaPort servoPort(&huart3, 200, 200);  // USART3 for servo bus (DMA with 200ms timeouts)
+static PollUartPort vpcPort(&hlpuart1, 1000);          // LPUART1 for VCP (blocking TX, IT RX)
 static ServoBus servoBus(servoPort);
 static SerialCommander commander(vpcPort);
 static HandController rightHand(Hand::Side::Right, servoBus);
@@ -52,6 +52,9 @@ static CExecutorAdapter cExecutorAdapter;
 extern "C" {
 
 void hand_bridge_init(void) {
+    // Start continuous DMA RX for servo bus
+    servoPort.startReceiveToIdle();
+    
     // Set default executor
     commander.setExecutor(&defaultExecutor);
 }
@@ -89,14 +92,16 @@ void commander_bridge_process(void) {
     commander.processCommand();
 }
 
-void bridge_on_uart_rx(void* huart) {
-    // Not used anymore - USART3 uses blocking RX, LPUART1 uses IT
-    (void)huart;
+void bridge_on_uart_tx(void* huart) {
+    // Route USART3 TX complete callback to Stm32UartDmaPort
+    Stm32UartDmaPort::onTxComplete(static_cast<UART_HandleTypeDef*>(huart));
 }
 
-void bridge_on_uart_tx(void* huart) {
-    // Not used anymore - both UARTs use blocking TX
-    (void)huart;
+// HAL RxEvent callback for ReceiveToIdle DMA
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+    if (huart == &huart3) {
+        Stm32UartDmaPort::onRxEvent(huart, Size);
+    }
 }
 
 } // extern "C"

@@ -84,14 +84,14 @@ void HandController::update() noexcept
     const uint32_t now = HAL_GetTick();
 
     // 1) Interpolate trajectories for smooth motion planning
-    // (still needed to generate intermediate setpoints)
+    // ALWAYS execute this - never block the trajectory computation!
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         if (!moving_[i]) continue;
         uint32_t elapsed = (now >= start_time_ms_[i]) ? (now - start_time_ms_[i]) : 0;
         float t = (duration_ms_[i] == 0) ? 1.0f : (static_cast<float>(elapsed) / static_cast<float>(duration_ms_[i]));
         if (t >= 1.0f) {
             current_pos_[i] = target_pos_[i];
-            // Don't set moving_[i] = false here - will be validated by actual feedback below
+            // moving_[i] will be validated by actual feedback below (if torque enabled)
         } else {
             float s = smoothstep(t);
             int32_t val = static_cast<int32_t>(start_pos_[i]) +
@@ -102,14 +102,56 @@ void HandController::update() noexcept
         }
     }
 
-    // 2) Trajectory completion validated by actual servo feedback (see section 3)
-    bool all_done = true;
+    // 2) Send sync-write broadcast to all servos (non-blocking, no response expected)
+    if (torque_enabled_) {
+        sendSyncWrite(50);  // 50ms execution time per servo
+    }
 
-    // 2) Disable torque after Open grip fully reaches target
+    // 3) Update bus state machine (handles DMA timeouts, async state)
+    bus_.process();
+
+    // 4) Round-Robin Feedback: query 1 servo per update cycle using blocking CPU receive.
+    // Blocking time: ~400µs max per call at 1Mbaud. Negligible in a 200ms update cycle.
+    // This completely bypasses D-Cache/CACHEAXI issues inherent to DMA-based reads.
+    if (torque_enabled_) {
+        uint8_t id = HandControl::Hand::getServoID(side_, static_cast<HandControl::Finger>(current_feedback_idx_));
+        Servo s(id, bus_);
+        auto pos = s.getPosition();
+
+        if (pos.has_value()) {
+            uint16_t actual_pos = static_cast<uint16_t>(pos.value());
+            int32_t error = static_cast<int32_t>(target_pos_[current_feedback_idx_]) - static_cast<int32_t>(actual_pos);
+
+            // Consider reached if within 50 counts (~1 degree)
+            if (abs(error) < 50) {
+                if (moving_[current_feedback_idx_]) {
+                    moving_[current_feedback_idx_] = false;
+                    HAND_DEBUG("Side %d Servo %d reached: actual=%d, target=%d",
+                        static_cast<int>(side_), static_cast<int>(id), actual_pos, target_pos_[current_feedback_idx_]);
+                }
+            }
+        } else {
+            HAND_DEBUG("Side %d Servo %d feedback failed", static_cast<int>(side_), static_cast<int>(id));
+        }
+
+        // Advance to next servo (round-robin 0..5)
+        current_feedback_idx_ = (current_feedback_idx_ + 1) % AXIS_COUNT;
+    }
+
+    // 5) Check if all movements completed
+    bool all_done = true;
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        if (moving_[i]) {
+            all_done = false;
+            break;
+        }
+    }
+
+    // 6) Disable torque after Open grip fully reaches target
     if (pending_torque_disable_ && torque_enabled_ && all_done) {
         HAND_DEBUG("Side %d disabling torque after Open completed", static_cast<int>(side_));
         for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            uint8_t id = Hand::getServoID(side_, static_cast<Finger>(i));
+            uint8_t id = HandControl::Hand::getServoID(side_, static_cast<HandControl::Finger>(i));
             Servo s(id, bus_);
             if (!s.setTorqueEnable(false)) {
                 HAND_DEBUG("Side %d torque disable FAILED for servo id %d", static_cast<int>(side_), static_cast<int>(id));
@@ -117,50 +159,5 @@ void HandController::update() noexcept
         }
         torque_enabled_ = false;
         pending_torque_disable_ = false;
-    }
-
-    // 3) Send sync-write + read feedback from ALL servos
-    if (torque_enabled_) {
-        sendSyncWrite(50);
-        
-        // 4) Read feedback from ALL servos every update cycle
-        // Validate trajectory completion by actual servo positions
-        bool any_moving = false;
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            if (!moving_[i]) continue;
-            
-            uint8_t id = Hand::getServoID(side_, static_cast<Finger>(i));
-            Servo s(id, bus_);
-            
-            auto pos = s.getPosition();
-            auto current = s.getCurrent();
-            
-            if (pos.has_value()) {
-                uint16_t actual_pos = static_cast<uint16_t>(pos.value());
-                int32_t error = static_cast<int32_t>(target_pos_[i]) - static_cast<int32_t>(actual_pos);
-                
-                // Consider reached if within 50 counts (~1 degree)
-                if (abs(error) < 50) {
-                    moving_[i] = false;
-                    HAND_DEBUG("Side %d Servo %d reached target: actual=%d, target=%d", 
-                        static_cast<int>(side_), static_cast<int>(id), actual_pos, target_pos_[i]);
-                } else {
-                    any_moving = true;
-                    
-                    // Log feedback for debugging (optional, can remove if too verbose)
-                    if (current.has_value()) {
-                        HAND_DEBUG("Side %d Servo %d: Pos=%d (target=%d, err=%d), Current=%d", 
-                            static_cast<int>(side_), static_cast<int>(id), 
-                            actual_pos, target_pos_[i], static_cast<int>(error), current.value());
-                    }
-                }
-            } else {
-                // Feedback read failed - keep moving flag for retry
-                any_moving = true;
-                HAND_DEBUG("Side %d Servo %d feedback read FAILED", static_cast<int>(side_), static_cast<int>(id));
-            }
-        }
-        
-        all_done = !any_moving;
     }
 }

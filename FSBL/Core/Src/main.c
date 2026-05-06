@@ -52,10 +52,11 @@ XSPI_HandleTypeDef hxspi2;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+static void MX_GPDMA1_Init(void);
 static void MX_GPIO_Init(void);
 static void MX_BSEC_Init(void);
-static void MX_LPUART1_UART_Init(void);
 static void MX_XSPI2_Init(void);
+static void MX_LPUART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -100,10 +101,11 @@ int main(void)
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
+  MX_GPDMA1_Init();
   MX_GPIO_Init();
   MX_BSEC_Init();
-  MX_LPUART1_UART_Init();
   MX_XSPI2_Init();
+  MX_LPUART1_UART_Init();
   MX_EXTMEM_MANAGER_Init();
   /* USER CODE BEGIN 2 */
   BSP_LED_Init(LED_BLUE);
@@ -274,6 +276,30 @@ static void MX_BSEC_Init(void)
   /* USER CODE BEGIN BSEC_Init 2 */
 
   /* USER CODE END BSEC_Init 2 */
+
+}
+
+/**
+  * @brief GPDMA1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPDMA1_Init(void)
+{
+
+  /* USER CODE BEGIN GPDMA1_Init 0 */
+
+  /* USER CODE END GPDMA1_Init 0 */
+
+  /* Peripheral clock enable */
+  __HAL_RCC_GPDMA1_CLK_ENABLE();
+
+  /* USER CODE BEGIN GPDMA1_Init 1 */
+
+  /* USER CODE END GPDMA1_Init 1 */
+  /* USER CODE BEGIN GPDMA1_Init 2 */
+
+  /* USER CODE END GPDMA1_Init 2 */
 
 }
 
