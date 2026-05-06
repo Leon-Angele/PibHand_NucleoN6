@@ -98,7 +98,9 @@ int main(void)
   MX_LPUART1_UART_Init();
   SystemIsolation_Config();
   /* USER CODE BEGIN 2 */
-
+  BSP_LED_Init(LED_RED);
+  BSP_LED_Init(LED_BLUE);
+  BSP_LED_Init(LED_GREEN);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -106,7 +108,7 @@ int main(void)
   while (1)
   {
 
-     BSP_LED_Toggle(LED_RED);
+    BSP_LED_Toggle(LED_RED);
     HAL_Delay(200);
     /* USER CODE END WHILE */
 
