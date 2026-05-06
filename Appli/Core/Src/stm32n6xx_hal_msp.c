@@ -160,11 +160,9 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     __HAL_RCC_LPUART1_CLK_ENABLE();
 
     __HAL_RCC_GPIOE_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
     /**LPUART1 GPIO Configuration
     PE5     ------> LPUART1_TX
     PE6     ------> LPUART1_RX
-    PA11     ------> LPUART1_CTS
     */
     GPIO_InitStruct.Pin = GPIO_PIN_5|VCP_RX_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -172,13 +170,6 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF3_LPUART1;
     HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin = GPIO_PIN_11;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    GPIO_InitStruct.Alternate = GPIO_AF3_LPUART1;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* LPUART1 DMA Init */
     /* GPDMA1_REQUEST_LPUART1_RX Init */
@@ -333,11 +324,8 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     /**LPUART1 GPIO Configuration
     PE5     ------> LPUART1_TX
     PE6     ------> LPUART1_RX
-    PA11     ------> LPUART1_CTS
     */
     HAL_GPIO_DeInit(GPIOE, GPIO_PIN_5|VCP_RX_Pin);
-
-    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_11);
 
     /* LPUART1 DMA DeInit */
     HAL_DMA_DeInit(huart->hdmarx);
