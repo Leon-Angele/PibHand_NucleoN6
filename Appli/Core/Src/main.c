@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include "hand/hand_bridge.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,7 +57,8 @@ RAMCFG_HandleTypeDef hramcfg_SRAM5;
 RAMCFG_HandleTypeDef hramcfg_SRAM6;
 
 /* USER CODE BEGIN PV */
-
+static uint8_t vcp_rx_byte;
+static uint32_t last_hand_tick = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -110,16 +112,22 @@ int main(void)
   BSP_LED_Init(LED_RED);
   BSP_LED_Init(LED_BLUE);
   BSP_LED_Init(LED_GREEN);
+  hand_bridge_init();
+  HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
-    BSP_LED_Toggle(LED_RED);
-    HAL_Delay(200);
-    printf("Hello World\r\n");
+    uint32_t now = HAL_GetTick();
+    if ((now - last_hand_tick) >= 20U)
+    {
+      last_hand_tick = now;
+      hand_bridge_update();
+      BSP_LED_Toggle(LED_GREEN);
+    }
+    commander_bridge_process();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -427,6 +435,24 @@ static void MX_GPIO_Init(void)
   HAL_UART_Transmit(&hlpuart1, (uint8_t *) ptr, len, HAL_MAX_DELAY);
   return len;
   }
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  bridge_on_uart_tx(huart);
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART3)
+  {
+    bridge_on_uart_rx(huart);
+  }
+  else if (huart->Instance == LPUART1)
+  {
+    commander_bridge_feed_byte(vcp_rx_byte);
+    HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
+  }
+}
 /* USER CODE END 4 */
 
 /**
