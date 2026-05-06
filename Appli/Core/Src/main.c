@@ -46,10 +46,6 @@ CACHEAXI_HandleTypeDef hcacheaxi;
 
 UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart3;
-DMA_HandleTypeDef handle_GPDMA1_Channel3;
-DMA_HandleTypeDef handle_GPDMA1_Channel2;
-DMA_HandleTypeDef handle_GPDMA1_Channel1;
-DMA_HandleTypeDef handle_GPDMA1_Channel0;
 
 RAMCFG_HandleTypeDef hramcfg_SRAM3;
 RAMCFG_HandleTypeDef hramcfg_SRAM4;
@@ -59,11 +55,11 @@ RAMCFG_HandleTypeDef hramcfg_SRAM6;
 /* USER CODE BEGIN PV */
 static uint8_t vcp_rx_byte;
 static uint32_t last_hand_tick = 0;
+static uint32_t rx_count = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 static void MX_GPIO_Init(void);
-static void MX_GPDMA1_Init(void);
 static void MX_CACHEAXI_Init(void);
 static void MX_RAMCFG_Init(void);
 static void MX_USART3_UART_Init(void);
@@ -89,6 +85,14 @@ int main(void)
 
   /* USER CODE END 1 */
 
+  /* Enable the CPU Cache */
+
+  /* Enable I-Cache---------------------------------------------------------*/
+  SCB_EnableICache();
+
+  /* Enable D-Cache---------------------------------------------------------*/
+  SCB_EnableDCache();
+
   /* MCU Configuration--------------------------------------------------------*/
   HAL_Init();
 
@@ -102,7 +106,6 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_GPDMA1_Init();
   MX_CACHEAXI_Init();
   MX_RAMCFG_Init();
   MX_USART3_UART_Init();
@@ -112,8 +115,11 @@ int main(void)
   BSP_LED_Init(LED_RED);
   BSP_LED_Init(LED_BLUE);
   BSP_LED_Init(LED_GREEN);
+  printf("Init start\r\n");
   hand_bridge_init();
+  printf("Bridge OK\r\n");
   HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
+  printf("Hand rdy! Send 'G:1:0' for grip test\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -121,11 +127,15 @@ int main(void)
   while (1)
   {
     uint32_t now = HAL_GetTick();
-    if ((now - last_hand_tick) >= 20U)
+    if ((now - last_hand_tick) >= 200U)
     {
       last_hand_tick = now;
       hand_bridge_update();
       BSP_LED_Toggle(LED_GREEN);
+      if (rx_count > 0) {
+        printf("[DBG] RX bytes: %lu\r\n", rx_count);
+        rx_count = 0;
+      }
     }
     commander_bridge_process();
     /* USER CODE END WHILE */
@@ -158,40 +168,6 @@ static void MX_CACHEAXI_Init(void)
   /* USER CODE BEGIN CACHEAXI_Init 2 */
 
   /* USER CODE END CACHEAXI_Init 2 */
-
-}
-
-/**
-  * @brief GPDMA1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPDMA1_Init(void)
-{
-
-  /* USER CODE BEGIN GPDMA1_Init 0 */
-
-  /* USER CODE END GPDMA1_Init 0 */
-
-  /* Peripheral clock enable */
-  __HAL_RCC_GPDMA1_CLK_ENABLE();
-
-  /* GPDMA1 interrupt Init */
-    HAL_NVIC_SetPriority(GPDMA1_Channel0_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(GPDMA1_Channel0_IRQn);
-    HAL_NVIC_SetPriority(GPDMA1_Channel1_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(GPDMA1_Channel1_IRQn);
-    HAL_NVIC_SetPriority(GPDMA1_Channel2_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(GPDMA1_Channel2_IRQn);
-    HAL_NVIC_SetPriority(GPDMA1_Channel3_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(GPDMA1_Channel3_IRQn);
-
-  /* USER CODE BEGIN GPDMA1_Init 1 */
-
-  /* USER CODE END GPDMA1_Init 1 */
-  /* USER CODE BEGIN GPDMA1_Init 2 */
-
-  /* USER CODE END GPDMA1_Init 2 */
 
 }
 
@@ -361,28 +337,6 @@ static void MX_RAMCFG_Init(void)
 
   /* RIF-Aware IPs Config */
 
-  /* set up GPDMA configuration */
-  /* set GPDMA1 channel 0 used by USART3 */
-  if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel0,DMA_CHANNEL_SEC|DMA_CHANNEL_PRIV|DMA_CHANNEL_SRC_SEC|DMA_CHANNEL_DEST_SEC)!= HAL_OK )
-  {
-    Error_Handler();
-  }
-  /* set GPDMA1 channel 1 used by USART3 */
-  if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel1,DMA_CHANNEL_SEC|DMA_CHANNEL_PRIV|DMA_CHANNEL_SRC_SEC|DMA_CHANNEL_DEST_SEC)!= HAL_OK )
-  {
-    Error_Handler();
-  }
-  /* set GPDMA1 channel 2 used by LPUART1 */
-  if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel2,DMA_CHANNEL_SEC|DMA_CHANNEL_PRIV|DMA_CHANNEL_SRC_SEC|DMA_CHANNEL_DEST_SEC)!= HAL_OK )
-  {
-    Error_Handler();
-  }
-  /* set GPDMA1 channel 3 used by LPUART1 */
-  if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel3,DMA_CHANNEL_SEC|DMA_CHANNEL_PRIV|DMA_CHANNEL_SRC_SEC|DMA_CHANNEL_DEST_SEC)!= HAL_OK )
-  {
-    Error_Handler();
-  }
-
   /* set up GPIO configuration */
   HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_11,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
   HAL_GPIO_ConfigPinAttributes(GPIOB,GPIO_PIN_0,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
@@ -419,6 +373,7 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -428,17 +383,20 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
   PUTCHAR_PROTOTYPE
   {
-  HAL_UART_Transmit(&hlpuart1, (uint8_t *)ch, 1, 0xFFFF);
-  return ch;
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    return ch;
   }
+
   int _write(int fd, char * ptr, int len){
-  HAL_UART_Transmit(&hlpuart1, (uint8_t *) ptr, len, HAL_MAX_DELAY);
-  return len;
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *) ptr, (uint16_t)len, HAL_MAX_DELAY);
+    return len;
   }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-  bridge_on_uart_tx(huart);
+    // Only LPUART1 uses this (for future use)
+    // USART3 uses blocking mode now
+    bridge_on_uart_tx(huart);
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -449,6 +407,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
   else if (huart->Instance == LPUART1)
   {
+    rx_count++;
     commander_bridge_feed_byte(vcp_rx_byte);
     HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
   }

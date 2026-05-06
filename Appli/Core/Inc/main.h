@@ -77,6 +77,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define VCP_TX_Pin GPIO_PIN_5
+#define VCP_TX_GPIO_Port GPIOE
 #define VCP_RX_Pin GPIO_PIN_6
 #define VCP_RX_GPIO_Port GPIOE
 

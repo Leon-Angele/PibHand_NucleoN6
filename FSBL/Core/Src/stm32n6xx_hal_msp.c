@@ -22,9 +22,6 @@
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
-extern DMA_HandleTypeDef handle_GPDMA1_Channel3;
-
-extern DMA_HandleTypeDef handle_GPDMA1_Channel2;
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN TD */
@@ -112,70 +109,16 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     __HAL_RCC_LPUART1_CLK_ENABLE();
 
     __HAL_RCC_GPIOE_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
     /**LPUART1 GPIO Configuration
     PE5     ------> LPUART1_TX
     PE6     ------> LPUART1_RX
-    PA11     ------> LPUART1_CTS
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_5|VCP_RX_Pin;
+    GPIO_InitStruct.Pin = VCP_TX_Pin|VCP_RX_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF3_LPUART1;
     HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin = GPIO_PIN_11;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    GPIO_InitStruct.Alternate = GPIO_AF3_LPUART1;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    /* LPUART1 DMA Init */
-    /* GPDMA1_REQUEST_LPUART1_RX Init */
-    handle_GPDMA1_Channel3.Instance = GPDMA1_Channel3;
-    handle_GPDMA1_Channel3.Init.Request = GPDMA1_REQUEST_LPUART1_RX;
-    handle_GPDMA1_Channel3.Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
-    handle_GPDMA1_Channel3.Init.Direction = DMA_PERIPH_TO_MEMORY;
-    handle_GPDMA1_Channel3.Init.SrcInc = DMA_SINC_FIXED;
-    handle_GPDMA1_Channel3.Init.DestInc = DMA_DINC_INCREMENTED;
-    handle_GPDMA1_Channel3.Init.SrcDataWidth = DMA_SRC_DATAWIDTH_BYTE;
-    handle_GPDMA1_Channel3.Init.DestDataWidth = DMA_DEST_DATAWIDTH_BYTE;
-    handle_GPDMA1_Channel3.Init.Priority = DMA_LOW_PRIORITY_MID_WEIGHT;
-    handle_GPDMA1_Channel3.Init.SrcBurstLength = 1;
-    handle_GPDMA1_Channel3.Init.DestBurstLength = 1;
-    handle_GPDMA1_Channel3.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0|DMA_DEST_ALLOCATED_PORT0;
-    handle_GPDMA1_Channel3.Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
-    handle_GPDMA1_Channel3.Init.Mode = DMA_NORMAL;
-    if (HAL_DMA_Init(&handle_GPDMA1_Channel3) != HAL_OK)
-    {
-      Error_Handler();
-    }
-
-    __HAL_LINKDMA(huart, hdmarx, handle_GPDMA1_Channel3);
-
-    /* GPDMA1_REQUEST_LPUART1_TX Init */
-    handle_GPDMA1_Channel2.Instance = GPDMA1_Channel2;
-    handle_GPDMA1_Channel2.Init.Request = GPDMA1_REQUEST_LPUART1_TX;
-    handle_GPDMA1_Channel2.Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
-    handle_GPDMA1_Channel2.Init.Direction = DMA_MEMORY_TO_PERIPH;
-    handle_GPDMA1_Channel2.Init.SrcInc = DMA_SINC_INCREMENTED;
-    handle_GPDMA1_Channel2.Init.DestInc = DMA_DINC_FIXED;
-    handle_GPDMA1_Channel2.Init.SrcDataWidth = DMA_SRC_DATAWIDTH_BYTE;
-    handle_GPDMA1_Channel2.Init.DestDataWidth = DMA_DEST_DATAWIDTH_BYTE;
-    handle_GPDMA1_Channel2.Init.Priority = DMA_LOW_PRIORITY_MID_WEIGHT;
-    handle_GPDMA1_Channel2.Init.SrcBurstLength = 1;
-    handle_GPDMA1_Channel2.Init.DestBurstLength = 1;
-    handle_GPDMA1_Channel2.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0|DMA_DEST_ALLOCATED_PORT0;
-    handle_GPDMA1_Channel2.Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
-    handle_GPDMA1_Channel2.Init.Mode = DMA_NORMAL;
-    if (HAL_DMA_Init(&handle_GPDMA1_Channel2) != HAL_OK)
-    {
-      Error_Handler();
-    }
-
-    __HAL_LINKDMA(huart, hdmatx, handle_GPDMA1_Channel2);
 
     /* USER CODE BEGIN LPUART1_MspInit 1 */
 
@@ -204,15 +147,9 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     /**LPUART1 GPIO Configuration
     PE5     ------> LPUART1_TX
     PE6     ------> LPUART1_RX
-    PA11     ------> LPUART1_CTS
     */
-    HAL_GPIO_DeInit(GPIOE, GPIO_PIN_5|VCP_RX_Pin);
+    HAL_GPIO_DeInit(GPIOE, VCP_TX_Pin|VCP_RX_Pin);
 
-    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_11);
-
-    /* LPUART1 DMA DeInit */
-    HAL_DMA_DeInit(huart->hdmarx);
-    HAL_DMA_DeInit(huart->hdmatx);
     /* USER CODE BEGIN LPUART1_MspDeInit 1 */
 
     /* USER CODE END LPUART1_MspDeInit 1 */

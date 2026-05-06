@@ -4,6 +4,7 @@
  */
 
 #include "hand/servo.hpp"
+#include <cstdio>
 #include "main.h"
 
 // Multi-port registry: each Stm32UartDmaPort registers itself so that
@@ -19,16 +20,26 @@ Stm32UartDmaPort::Stm32UartDmaPort(UART_HandleTypeDef* huart, uint32_t tx_timeou
     }
 }
 
-bool Stm32UartDmaPort::transmitDMA(const uint8_t* data, uint16_t length)
+bool Stm32UartDmaPort::transmitDMA(const uint8_t* data, uint16_t length, bool waitForCompletion)
 {
+    // For short WRITE commands: use blocking transmit (DMA callback unreliable)
+    if (!waitForCompletion) {
+        // Cache clean still needed even for blocking mode on Cortex-M55
+        SCB_CleanDCache_by_Addr((uint32_t*)data, length);
+        HAL_StatusTypeDef ret = HAL_UART_Transmit(huart_, (uint8_t*)data, length, tx_timeout_ms_);
+        if (ret != HAL_OK) {
+            printf("[SERVO] Blocking TX failed: %d\r\n", ret);
+            return false;
+        }
+        return true;
+    }
+    
+    // For READ commands: use DMA with callback wait
     tx_done_ = false;
-
-    // 1. CACHE CLEAN: Zwingt die CPU, die Daten aus dem L1-Cache ins physische RAM zu schreiben.
-    // Das ist beim STM32N6 (Cortex-M55) Pflicht für DMA-Transfers.
     SCB_CleanDCache_by_Addr((uint32_t*)data, length);
-
-    // 2. DMA Starten
-    if (HAL_UART_Transmit_DMA(huart_, (uint8_t*)data, length) != HAL_OK) {
+    HAL_StatusTypeDef ret = HAL_UART_Transmit_DMA(huart_, (uint8_t*)data, length);
+    if (ret != HAL_OK) {
+        printf("[SERVO] TX DMA start failed: %d (UART=%p)\r\n", ret, huart_->Instance);
         return false;
     }
     
@@ -38,6 +49,7 @@ bool Stm32UartDmaPort::transmitDMA(const uint8_t* data, uint16_t length)
         if ((HAL_GetTick() - start) > tx_timeout_ms_) {
             // 4. TIMEOUT-FIX: Wenn der Interrupt nicht kommt, MÜSSEN wir die HAL abbrechen.
             // Sonst bleibt huart_->gState für immer auf HAL_UART_STATE_BUSY_TX!
+            printf("[SERVO] TX timeout after %lu ms (UART=%p)\r\n", tx_timeout_ms_, huart_->Instance);
             HAL_UART_AbortTransmit(huart_);
             return false;
         }
@@ -79,6 +91,23 @@ void Stm32UartDmaPort::onRxComplete(UART_HandleTypeDef* huart)
     }
 }
 
+// PollUartPort implementation (blocking TX, no DMA)
+bool PollUartPort::transmitDMA(const uint8_t* data, uint16_t length, bool waitForCompletion)
+{
+    (void)waitForCompletion; // Not used for blocking mode
+    // Use blocking transmit — simple and reliable for debug/VCP output
+    HAL_StatusTypeDef ret = HAL_UART_Transmit(huart_, const_cast<uint8_t*>(data), length, tx_timeout_ms_);
+    return (ret == HAL_OK);
+}
+
+bool PollUartPort::receiveDMA(uint8_t* buffer, uint16_t length)
+{
+    // Not used for VCP/Commander — RX handled via HAL_UART_Receive_IT in main.c
+    (void)buffer;
+    (void)length;
+    return false;
+}
+
 // checksum calculation: ~(ID + Length + Instruction + Params...)
 uint8_t ServoBus::checksum(const uint8_t* data, size_t len)
 {
@@ -108,11 +137,10 @@ bool ServoBus::writeRegister(uint8_t id, uint8_t reg, const uint8_t* data, uint8
     uint8_t csum = checksum(&tx_buf_[2], static_cast<size_t>(idx - 2));
     tx_buf_[idx++] = csum;
 
-    // Transmit and return immediately.
+    // Transmit and return immediately (non-blocking).
     // SCS/Feetech servos only return status packets for READ commands by default
-    // (Status Return Level = 1). Waiting for a response after WRITE would cause
-    // a 200 ms RX timeout per servo and block the entire update loop.
-    return port_.transmitDMA(tx_buf_.data(), (uint16_t)idx);
+    // (Status Return Level = 1). No need to wait for TX completion.
+    return port_.transmitDMA(tx_buf_.data(), (uint16_t)idx, false);
 }
 
 bool ServoBus::readRegister(uint8_t id, uint8_t reg, uint8_t len, uint8_t* out)

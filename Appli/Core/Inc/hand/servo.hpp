@@ -14,7 +14,7 @@
 class ISerialPort {
 public:
     virtual ~ISerialPort() = default;
-    virtual bool transmitDMA(const uint8_t* data, uint16_t length) = 0;
+    virtual bool transmitDMA(const uint8_t* data, uint16_t length, bool waitForCompletion = true) = 0;
     virtual bool receiveDMA(uint8_t* buffer, uint16_t length) = 0;
 };
 
@@ -23,7 +23,7 @@ public:
     Stm32UartDmaPort(UART_HandleTypeDef* huart, uint32_t tx_timeout_ms = 200, uint32_t rx_timeout_ms = 200);
     ~Stm32UartDmaPort() override = default;
 
-    bool transmitDMA(const uint8_t* data, uint16_t length) override;
+    bool transmitDMA(const uint8_t* data, uint16_t length, bool waitForCompletion = true) override;
     bool receiveDMA(uint8_t* buffer, uint16_t length) override;
 
     // Called from HAL callbacks
@@ -43,6 +43,21 @@ private:
     static constexpr uint8_t MAX_INSTANCES = 2;
     static Stm32UartDmaPort* instances_[MAX_INSTANCES];
     static uint8_t instance_count_;
+};
+
+// Lightweight UART port using blocking transmit (no DMA) — for VCP/debug output
+class PollUartPort : public ISerialPort {
+public:
+    explicit PollUartPort(UART_HandleTypeDef* huart, uint32_t tx_timeout_ms = 1000)
+        : huart_(huart), tx_timeout_ms_(tx_timeout_ms) {}
+    ~PollUartPort() override = default;
+
+    bool transmitDMA(const uint8_t* data, uint16_t length, bool waitForCompletion = true) override;
+    bool receiveDMA(uint8_t* buffer, uint16_t length) override; // stub, not used
+
+private:
+    UART_HandleTypeDef* huart_;
+    uint32_t tx_timeout_ms_;
 };
 
 class ServoBus {

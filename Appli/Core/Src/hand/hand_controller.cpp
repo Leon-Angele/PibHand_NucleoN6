@@ -83,19 +83,15 @@ void HandController::update() noexcept
 {
     const uint32_t now = HAL_GetTick();
 
-    // 1) Interpolate trajectories
-    bool all_done = true;
+    // 1) Interpolate trajectories for smooth motion planning
+    // (still needed to generate intermediate setpoints)
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         if (!moving_[i]) continue;
-        all_done = false;
         uint32_t elapsed = (now >= start_time_ms_[i]) ? (now - start_time_ms_[i]) : 0;
         float t = (duration_ms_[i] == 0) ? 1.0f : (static_cast<float>(elapsed) / static_cast<float>(duration_ms_[i]));
         if (t >= 1.0f) {
             current_pos_[i] = target_pos_[i];
-            moving_[i] = false;
-            if (i == 0) {
-                HAND_DEBUG("Side %d representative finger %d reached target", static_cast<int>(side_), static_cast<int>(i));
-            }
+            // Don't set moving_[i] = false here - will be validated by actual feedback below
         } else {
             float s = smoothstep(t);
             int32_t val = static_cast<int32_t>(start_pos_[i]) +
@@ -105,6 +101,9 @@ void HandController::update() noexcept
             current_pos_[i] = static_cast<uint16_t>(val);
         }
     }
+
+    // 2) Trajectory completion validated by actual servo feedback (see section 3)
+    bool all_done = true;
 
     // 2) Disable torque after Open grip fully reaches target
     if (pending_torque_disable_ && torque_enabled_ && all_done) {
@@ -120,8 +119,48 @@ void HandController::update() noexcept
         pending_torque_disable_ = false;
     }
 
-    // 3) Send sync-write only when torque is active
+    // 3) Send sync-write + read feedback from ALL servos
     if (torque_enabled_) {
         sendSyncWrite(50);
+        
+        // 4) Read feedback from ALL servos every update cycle
+        // Validate trajectory completion by actual servo positions
+        bool any_moving = false;
+        for (size_t i = 0; i < AXIS_COUNT; ++i) {
+            if (!moving_[i]) continue;
+            
+            uint8_t id = Hand::getServoID(side_, static_cast<Finger>(i));
+            Servo s(id, bus_);
+            
+            auto pos = s.getPosition();
+            auto current = s.getCurrent();
+            
+            if (pos.has_value()) {
+                uint16_t actual_pos = static_cast<uint16_t>(pos.value());
+                int32_t error = static_cast<int32_t>(target_pos_[i]) - static_cast<int32_t>(actual_pos);
+                
+                // Consider reached if within 50 counts (~1 degree)
+                if (abs(error) < 50) {
+                    moving_[i] = false;
+                    HAND_DEBUG("Side %d Servo %d reached target: actual=%d, target=%d", 
+                        static_cast<int>(side_), static_cast<int>(id), actual_pos, target_pos_[i]);
+                } else {
+                    any_moving = true;
+                    
+                    // Log feedback for debugging (optional, can remove if too verbose)
+                    if (current.has_value()) {
+                        HAND_DEBUG("Side %d Servo %d: Pos=%d (target=%d, err=%d), Current=%d", 
+                            static_cast<int>(side_), static_cast<int>(id), 
+                            actual_pos, target_pos_[i], static_cast<int>(error), current.value());
+                    }
+                }
+            } else {
+                // Feedback read failed - keep moving flag for retry
+                any_moving = true;
+                HAND_DEBUG("Side %d Servo %d feedback read FAILED", static_cast<int>(side_), static_cast<int>(id));
+            }
+        }
+        
+        all_done = !any_moving;
     }
 }

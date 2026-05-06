@@ -79,6 +79,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define I2C1_SDA_Pin GPIO_PIN_1
 #define I2C1_SDA_GPIO_Port GPIOC
+#define VCP_TX_Pin GPIO_PIN_5
+#define VCP_TX_GPIO_Port GPIOE
 #define I2CA_SCL_Pin GPIO_PIN_9
 #define I2CA_SCL_GPIO_Port GPIOH
 #define VCP_RX_Pin GPIO_PIN_6
