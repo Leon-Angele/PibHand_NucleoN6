@@ -1,8 +1,8 @@
 #include "hand/hand_bridge.h"
 
 #include "hand/hand_config.hpp"
-#include "hand/servo.hpp"
-#include "hand/hand_controller.hpp"
+#include "hand/servo_async.hpp"
+#include "hand/hand_controller_async.hpp"
 #include "hand/serial_commander.hpp"
 #include "main.h"
 
@@ -17,13 +17,13 @@ extern UART_HandleTypeDef hlpuart1;  // VCP
 // C executor callback pointer
 static hand_grip_executor_t c_executor_cb = nullptr;
 
-// DMA-based async servo port + blocking VCP port
-static Stm32UartDmaPort servoPort(&huart3, 200, 200);  // USART3 for servo bus (DMA with 200ms timeouts)
-static PollUartPort vpcPort(&hlpuart1, 1000);          // LPUART1 for VCP (blocking TX, IT RX)
+// ASYNC DMA-based servo port + blocking VCP port
+static Stm32UartDmaPort servoPort(&huart3, 200, 200);
+static PollUartPort vpcPort(&hlpuart1, 1000);
 static ServoBus servoBus(servoPort);
 static SerialCommander commander(vpcPort);
-static HandController rightHand(Hand::Side::Right, servoBus);
-static HandController leftHand(Hand::Side::Left, servoBus);
+static HandControllerAsync rightHand(Hand::Side::Right, servoBus);
+static HandControllerAsync leftHand(Hand::Side::Left, servoBus);
 
 // Default executor: calls C++ controllers directly
 class DefaultGripExecutor : public ICommandExecutor {
@@ -53,7 +53,8 @@ extern "C" {
 
 void hand_bridge_init(void) {
     // Start continuous DMA RX for servo bus
-    servoPort.startReceiveToIdle();
+    bool rxStarted = servoPort.startReceiveToIdle();
+    printf("[BRIDGE] RX ReceiveToIdle start: %s\r\n", rxStarted ? "OK" : "FAIL");
     
     // Set default executor
     commander.setExecutor(&defaultExecutor);
@@ -93,7 +94,6 @@ void commander_bridge_process(void) {
 }
 
 void bridge_on_uart_tx(void* huart) {
-    // Route USART3 TX complete callback to Stm32UartDmaPort
     Stm32UartDmaPort::onTxComplete(static_cast<UART_HandleTypeDef*>(huart));
 }
 
@@ -106,14 +106,17 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 
 } // extern "C"
 
-// C-wrapper to set a raw servo position using degrees (-90..+90)
+// C-wrapper to set raw servo position using degrees (-90..+90)
 extern "C" bool hand_bridge_set_servo_deg(uint8_t id, int16_t degrees, uint16_t time_ms) {
     if (degrees < -90) degrees = -90;
     if (degrees > 90) degrees = 90;
-    // Map -90..+90 -> 0..4095
-    uint32_t pos = static_cast<uint32_t>(static_cast<int32_t>(degrees) + 90); // 0..180
+    uint32_t pos = static_cast<uint32_t>(static_cast<int32_t>(degrees) + 90);
     uint16_t servo_pos = static_cast<uint16_t>((pos * 4095u) / 180u);
     Servo s(id, servoBus);
     s.setTorqueEnable(true);
+    // Wait for torque enable to complete
+    while (servoBus.getState() != BusState::IDLE) {
+        servoBus.process();
+    }
     return s.setPosition(servo_pos, time_ms);
 }
