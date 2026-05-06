@@ -123,7 +123,6 @@ int main(void)
   hand_bridge_init();
   printf("Bridge OK\r\n");
   HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
-  printf("Hand rdy! Send 'G:1:0' for grip test\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -131,20 +130,27 @@ int main(void)
   while (1)
   {
     uint32_t now = HAL_GetTick();
-    if ((now - last_hand_tick) >= 200U)
+    
+    // Hand Controller mit 100Hz (10ms) laufen lassen!
+    if ((now - last_hand_tick) >= 10U) 
     {
       last_hand_tick = now;
       hand_bridge_update();
+    }
+    
+    // LED blinken lassen (alle 500ms)
+    static uint32_t last_led_tick = 0;
+    if ((now - last_led_tick) >= 500U)
+    {
+      last_led_tick = now;
       BSP_LED_Toggle(LED_GREEN);
       if (rx_count > 0) {
-        printf("[DBG] RX bytes: %lu\r\n", rx_count);
+        printf("[DBG] VCP RX bytes: %lu\r\n", rx_count);
         rx_count = 0;
       }
     }
+    
     commander_bridge_process();
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
@@ -453,6 +459,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     rx_count++;
     commander_bridge_feed_byte(vcp_rx_byte);
     HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
+  }
+  else if (huart->Instance == USART3)
+  {
+    // USART3 (servo bus): DMA RX completion routed to Stm32UartDmaPort
+    bridge_on_uart_rx(huart);
   }
 }
 /* USER CODE END 4 */

@@ -22,7 +22,7 @@ public:
 
 class SerialCommander {
 public:
-    explicit SerialCommander(ISerialPort& port) noexcept;
+    explicit SerialCommander(HandControl::ISerialPort& port) noexcept;
     void setExecutor(ICommandExecutor* exec) noexcept { executor_ = exec; }
 
     // ISR-safe feedByte API; processCommand must be called from non-ISR context.
@@ -33,7 +33,7 @@ public:
     void processCommand() noexcept;
 
 private:
-    ISerialPort& port_;
+    HandControl::ISerialPort& port_;
     ICommandExecutor* executor_ = nullptr;
 
     static constexpr size_t RX_BUF_SIZE = 32;

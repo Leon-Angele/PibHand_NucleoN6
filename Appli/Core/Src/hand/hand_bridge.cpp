@@ -1,8 +1,8 @@
 #include "hand/hand_bridge.h"
 
 #include "hand/hand_config.hpp"
-#include "hand/servo_async.hpp"
-#include "hand/hand_controller_async.hpp"
+#include "hand/servo.hpp"
+#include "hand/hand_controller.hpp"
 #include "hand/serial_commander.hpp"
 #include "main.h"
 
@@ -18,12 +18,12 @@ extern UART_HandleTypeDef hlpuart1;  // VCP
 static hand_grip_executor_t c_executor_cb = nullptr;
 
 // ASYNC DMA-based servo port + blocking VCP port
-static Stm32UartDmaPort servoPort(&huart3, 200, 200);
+static Stm32UartDmaPort servoPort(&huart3);
 static PollUartPort vpcPort(&hlpuart1, 1000);
 static ServoBus servoBus(servoPort);
 static SerialCommander commander(vpcPort);
-static HandControllerAsync rightHand(Hand::Side::Right, servoBus);
-static HandControllerAsync leftHand(Hand::Side::Left, servoBus);
+static HandController rightHand(Hand::Side::Right, servoBus);
+static HandController leftHand(Hand::Side::Left, servoBus);
 
 // Default executor: calls C++ controllers directly
 class DefaultGripExecutor : public ICommandExecutor {
@@ -52,12 +52,10 @@ static CExecutorAdapter cExecutorAdapter;
 extern "C" {
 
 void hand_bridge_init(void) {
-    // Start continuous DMA RX for servo bus
-    bool rxStarted = servoPort.startReceiveToIdle();
-    printf("[BRIDGE] RX ReceiveToIdle start: %s\r\n", rxStarted ? "OK" : "FAIL");
-    
+    // No initialization needed - DMA is started on-demand per read operation (RX-before-TX)
     // Set default executor
     commander.setExecutor(&defaultExecutor);
+    printf("[BRIDGE] Hand controller initialized\r\n");
 }
 
 void hand_bridge_set_executor(hand_grip_executor_t cb) {
@@ -82,7 +80,7 @@ bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip, uint16_t duration_m
 
 void hand_bridge_update(void) {
     rightHand.update();
-    leftHand.update();
+    // leftHand.update();
 }
 
 bool commander_bridge_feed_byte(uint8_t b) {
@@ -97,26 +95,23 @@ void bridge_on_uart_tx(void* huart) {
     Stm32UartDmaPort::onTxComplete(static_cast<UART_HandleTypeDef*>(huart));
 }
 
-// HAL RxEvent callback for ReceiveToIdle DMA
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
-    if (huart == &huart3) {
-        Stm32UartDmaPort::onRxEvent(huart, Size);
-    }
+void bridge_on_uart_rx(void* huart) {
+    Stm32UartDmaPort::onRxComplete(static_cast<UART_HandleTypeDef*>(huart));
 }
 
 } // extern "C"
 
-// C-wrapper to set raw servo position using degrees (-90..+90)
+// NOTE: hand_bridge_set_servo_deg is disabled in the new async implementation
+// because it uses blocking calls that violate the non-blocking architecture.
+// Use HandController::setTargetGrip() instead for coordinated hand movements.
+/*
 extern "C" bool hand_bridge_set_servo_deg(uint8_t id, int16_t degrees, uint16_t time_ms) {
     if (degrees < -90) degrees = -90;
     if (degrees > 90) degrees = 90;
     uint32_t pos = static_cast<uint32_t>(static_cast<int32_t>(degrees) + 90);
     uint16_t servo_pos = static_cast<uint16_t>((pos * 4095u) / 180u);
-    Servo s(id, servoBus);
-    s.setTorqueEnable(true);
-    // Wait for torque enable to complete
-    while (servoBus.getState() != BusState::IDLE) {
-        servoBus.process();
-    }
-    return s.setPosition(servo_pos, time_ms);
+    // FIXME: Servo class no longer exists in async implementation
+    // Would need to use ServoBus::writeRegister() with proper async handling
+    return false;
 }
+*/

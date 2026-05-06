@@ -4,7 +4,7 @@
 
 using namespace HandControl;
 
-SerialCommander::SerialCommander(ISerialPort& port) noexcept
+SerialCommander::SerialCommander(HandControl::ISerialPort& port) noexcept
 : port_(port), executor_(nullptr), rx_head_(0), rx_tail_(0), overflow_flag_(false)
 {
 }
