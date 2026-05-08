@@ -90,14 +90,23 @@ struct GripConfig {
 
 /**
  * @brief Globale Achsen-Konfiguration (identisch für links und rechts)
+ *
+ * Each entry is a `FingerConfig` initialized as:
+ *   { "<name>", <minPos>, <maxPos>, <maxSpeed>, <maxCurrent> }
+ * where:
+ *   - name: human-readable axis name
+ *   - minPos: minimum servo position (native units, 0)
+ *   - maxPos: maximum servo position (native units, 4095)
+ *   - maxSpeed: maximum speed (implementation-defined units)
+ *   - maxCurrent: maximum allowed current in mA
  */
 constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> AxisSettings = {{
-    {"Thumb Stretch", 0, 4095, 2000, 1500},
-    {"Index Stretch", 0, 4095, 2000, 1500},
-    {"Middle Stretch", 0, 4095, 2000, 1500},
-    {"Ring Stretch", 0, 4095, 2000, 1500},
-    {"Pinky Stretch", 0, 4095, 2000, 1500},
-    {"Thumb Opposition", 0, 4095, 2000, 1500}
+    {"Thumb Stretch", 0, 4095, 100, 1500},
+    {"Index Stretch", 0, 4095, 100, 1500},
+    {"Middle Stretch", 0, 4095, 100, 1500},
+    {"Ring Stretch", 0, 4095, 100, 1500},
+    {"Pinky Stretch", 0, 4095, 100, 1500},
+    {"Thumb Opposition", 0, 4095, 100, 1500}
 }};
 
 /**
