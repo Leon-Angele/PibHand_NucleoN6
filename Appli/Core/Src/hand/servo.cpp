@@ -43,6 +43,11 @@ Stm32UartDmaPort::Stm32UartDmaPort(UART_HandleTypeDef* huart)
     }
 }
 
+/**
+ * @brief Construct a new Stm32UartDmaPort instance.
+ * @param huart Pointer to HAL UART handle
+ */
+
 bool Stm32UartDmaPort::transmitDMA(const uint8_t* data, uint16_t length)
 {
     if (!data || length == 0) return false;
@@ -62,6 +67,13 @@ bool Stm32UartDmaPort::transmitDMA(const uint8_t* data, uint16_t length)
     
     return true;
 }
+
+/**
+ * @brief Start a non-blocking DMA transmit.
+ * @param data Pointer to data buffer
+ * @param length Number of bytes to send
+ * @return true if DMA started successfully
+ */
 
 bool Stm32UartDmaPort::receiveDMA(uint8_t* buffer, uint16_t length)
 {
@@ -83,17 +95,32 @@ bool Stm32UartDmaPort::receiveDMA(uint8_t* buffer, uint16_t length)
     return true;
 }
 
+/**
+ * @brief Start a non-blocking DMA receive into provided buffer.
+ * @param buffer Pointer to receive buffer
+ * @param length Number of bytes to receive
+ * @return true if DMA started successfully
+ */
+
 void Stm32UartDmaPort::process()
 {
     // Non-blocking: no busy-waiting, just state checks
     // Echo handling could go here if needed
 }
 
+/**
+ * @brief Non-blocking port housekeeping (timeouts, echo handling).
+ */
+
 void Stm32UartDmaPort::abortRx()
 {
     HAL_UART_AbortReceive(huart_);
     rx_done_ = true;
 }
+
+/**
+ * @brief Abort an ongoing RX operation (used on timeouts).
+ */
 
 void Stm32UartDmaPort::onTxComplete(UART_HandleTypeDef* huart)
 {
@@ -106,6 +133,11 @@ void Stm32UartDmaPort::onTxComplete(UART_HandleTypeDef* huart)
     }
 }
 
+/**
+ * @brief Static callback router for TX complete events from HAL.
+ * @param huart UART handle received from HAL
+ */
+
 void Stm32UartDmaPort::onRxComplete(UART_HandleTypeDef* huart)
 {
     // Route callback to correct instance
@@ -117,6 +149,11 @@ void Stm32UartDmaPort::onRxComplete(UART_HandleTypeDef* huart)
     }
 }
 
+/**
+ * @brief Static callback router for RX complete events from HAL.
+ * @param huart UART handle received from HAL
+ */
+
 // ============================================================================
 // LAYER 1: HARDWARE ABSTRACTION - PollUartPort (VCP only)
 // ============================================================================
@@ -125,6 +162,13 @@ PollUartPort::PollUartPort(UART_HandleTypeDef* huart, uint32_t timeout_ms)
     : huart_(huart), timeout_ms_(timeout_ms)
 {
 }
+
+/**
+ * @brief Blocking transmit implementation for VCP/debug.
+ * @param data Message bytes
+ * @param length Byte count
+ * @return true on success
+ */
 
 bool PollUartPort::transmitDMA(const uint8_t* data, uint16_t length)
 {
@@ -141,6 +185,11 @@ ServoBus::ServoBus(ISerialPort& port)
     : port_(port), state_(BusState::IDLE), tx_buf_(tx_buf_storage_), rx_buf_(rx_buf_storage_)
 {
 }
+
+/**
+ * @brief Construct a new ServoBus instance.
+ * @param port Underlying serial port implementation
+ */
 
 void ServoBus::poll()
 {
@@ -190,6 +239,12 @@ void ServoBus::poll()
     port_.process();
 }
 
+/**
+ * @brief Poll the servo bus state machine (non-blocking).
+ *
+ * Handles TX/RX completion and timeouts. Call from main loop.
+ */
+
 bool ServoBus::syncWritePositions(const uint8_t* ids, const uint16_t* positions, 
                                   const uint16_t* times_ms, size_t count)
 {
@@ -211,6 +266,15 @@ bool ServoBus::syncWritePositions(const uint8_t* ids, const uint16_t* positions,
     return true;
 }
 
+/**
+ * @brief Send a SyncWrite packet to multiple servos (non-blocking).
+ * @param ids Array of servo IDs
+ * @param positions Array of positions (0..4095)
+ * @param times_ms Array of move times in ms
+ * @param count Number of servos
+ * @return true if command started
+ */
+
 bool ServoBus::writeRegister(uint8_t id, uint8_t reg, const uint8_t* data, uint8_t len)
 {
     if (state_ != BusState::IDLE || !data) {
@@ -230,6 +294,10 @@ bool ServoBus::writeRegister(uint8_t id, uint8_t reg, const uint8_t* data, uint8
     operation_start_ms_ = HAL_GetTick();
     return true;
 }
+
+/**
+ * @brief Write a register to a single servo (non-blocking).
+ */
 
 bool ServoBus::startReadCurrent(uint8_t id)
 {
@@ -273,6 +341,12 @@ bool ServoBus::startReadCurrent(uint8_t id)
     return true;
 }
 
+/**
+ * @brief Start asynchronous read of the Current register using RX-before-TX.
+ * @param id Servo ID
+ * @return true if read started successfully
+ */
+
 std::optional<int16_t> ServoBus::getReadResult()
 {
     if (state_ != BusState::DATA_READY) {
@@ -285,6 +359,11 @@ std::optional<int16_t> ServoBus::getReadResult()
     
     return value;
 }
+
+/**
+ * @brief Retrieve result of a completed async read.
+ * @return std::optional<int16_t> Measured current in mA, or std::nullopt
+ */
 
 // ============================================================================
 // PROTOCOL HELPERS
@@ -300,6 +379,10 @@ uint8_t ServoBus::calcChecksum(const uint8_t* data, size_t len)
     }
     return static_cast<uint8_t>(~sum & 0xFF);
 }
+
+/**
+ * @brief Calculate protocol checksum for a packet (STS3215 style).
+ */
 
 bool ServoBus::validateResponse(uint8_t expected_id, uint8_t data_len)
 {
@@ -344,6 +427,13 @@ bool ServoBus::validateResponse(uint8_t expected_id, uint8_t data_len)
     return true;
 }
 
+/**
+ * @brief Validate a received status packet for expected ID/length/checksum.
+ * @param expected_id Expected servo ID
+ * @param data_len Expected payload data length
+ * @return true if packet is valid
+ */
+
 size_t ServoBus::buildReadPacket(uint8_t id, uint8_t reg, uint8_t len, uint8_t* out_buf)
 {
     // Packet format: 0xFF 0xFF ID Length Instruction Reg DataLen Checksum
@@ -360,6 +450,10 @@ size_t ServoBus::buildReadPacket(uint8_t id, uint8_t reg, uint8_t len, uint8_t* 
     
     return 8;
 }
+
+/**
+ * @brief Build a Read instruction packet.
+ */
 
 size_t ServoBus::buildWritePacket(uint8_t id, uint8_t reg, const uint8_t* data, uint8_t len, uint8_t* out_buf)
 {
@@ -383,6 +477,10 @@ size_t ServoBus::buildWritePacket(uint8_t id, uint8_t reg, const uint8_t* data, 
     
     return 7 + len;
 }
+
+/**
+ * @brief Build a Write instruction packet.
+ */
 
 size_t ServoBus::buildSyncWritePacket(const uint8_t* ids, const uint16_t* positions, 
                                       const uint16_t* times_ms, size_t count, uint8_t* out_buf)
@@ -415,5 +513,9 @@ size_t ServoBus::buildSyncWritePacket(const uint8_t* ids, const uint16_t* positi
     
     return offset + 1;
 }
+
+/**
+ * @brief Build a SyncWrite broadcast packet for multiple servos.
+ */
 
 } // namespace HandControl

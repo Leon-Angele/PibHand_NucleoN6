@@ -61,12 +61,28 @@ static CExecutorAdapter cExecutorAdapter;
 
 extern "C" {
 
+/**
+ * @brief Initialize the hand bridge subsystem.
+ *
+ * Must be called after HAL/peripheral initialization. This sets the
+ * `SerialCommander` executor to the default C++ executor which forwards
+ * commands to the local `HandController` instances.
+ */
 void hand_bridge_init(void) {
 
     commander.setExecutor(&defaultExecutor);
     printf("[BRIDGE] Hand controller initialized\r\n");
 }
 
+/**
+ * @brief Register a C callback executor for grip commands.
+ *
+ * If `cb` is non-NULL, incoming serial grip commands are forwarded to the
+ * provided C callback via the `CExecutorAdapter`. Passing NULL restores the
+ * default C++ executor implementation.
+ *
+ * @param cb Function pointer of type `hand_grip_executor_t` (or NULL).
+ */
 void hand_bridge_set_executor(hand_grip_executor_t cb) {
     c_executor_cb = cb;
     if (cb) {
@@ -76,6 +92,18 @@ void hand_bridge_set_executor(hand_grip_executor_t cb) {
     }
 }
 
+/**
+ * @brief Set a target grip on the specified hand.
+ *
+ * This is a C-callable helper that maps numeric `side` and `grip` values to
+ * the internal C++ enums and schedules a smooth trajectory with the given
+ * duration.
+ *
+ * @param side 0 = Left, 1 = Right
+ * @param grip Grip identifier as `uint8_t` (maps to `GripType`)
+ * @param duration_ms Duration of the interpolated movement in milliseconds
+ * @return true if the request was accepted
+ */
 bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip, uint16_t duration_ms) {
     Hand::Side s = (side == 1) ? Hand::Side::Right : Hand::Side::Left;
     HandControl::GripType g = static_cast<HandControl::GripType>(grip);
@@ -87,23 +115,60 @@ bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip, uint16_t duration_m
     return true;
 }
 
+/**
+ * @brief Periodic update called from the main loop.
+ *
+ * Calls the per-hand `update()` method which performs non-blocking
+ * interpolation and telemetry polling. Should be executed at ~100Hz.
+ */
 void hand_bridge_update(void) {
     rightHand.update();
     // leftHand.update();
 }
 
+/**
+ * @brief Feed a received UART byte into the commander (ISR-safe).
+ *
+ * Typically called from the HAL UART RX IRQ to push incoming bytes into the
+ * ring buffer. Returns false if the internal buffer is full.
+ *
+ * @param b Received byte
+ * @return true if byte was accepted, false on overflow
+ */
 bool commander_bridge_feed_byte(uint8_t b) {
     return commander.feedByte(b);
 }
 
+/**
+ * @brief Process pending ASCII commands (call from non-ISR/main loop).
+ *
+ * Parses complete lines from the internal buffer and executes them via the
+ * registered executor.
+ */
 void commander_bridge_process(void) {
     commander.processCommand();
 }
 
+/**
+ * @brief HAL TX complete callback bridge.
+ *
+ * Forward the HAL UART TX complete event to the `Stm32UartDmaPort` router.
+ * Should be called from `HAL_UART_TxCpltCallback` with the `UART_HandleTypeDef*`.
+ *
+ * @param huart Pointer to the UART handle provided by HAL
+ */
 void bridge_on_uart_tx(void* huart) {
     Stm32UartDmaPort::onTxComplete(static_cast<UART_HandleTypeDef*>(huart));
 }
 
+/**
+ * @brief HAL RX complete callback bridge.
+ *
+ * Forward the HAL UART RX complete event to the `Stm32UartDmaPort` router.
+ * Should be called from `HAL_UART_RxCpltCallback` with the `UART_HandleTypeDef*`.
+ *
+ * @param huart Pointer to the UART handle provided by HAL
+ */
 void bridge_on_uart_rx(void* huart) {
     Stm32UartDmaPort::onRxComplete(static_cast<UART_HandleTypeDef*>(huart));
 }

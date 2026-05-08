@@ -33,6 +33,14 @@ HandController::HandController(Hand::Side side, ServoBus& bus)
     poll_finger_idx_ = 0;
 }
 
+/**
+ * @brief Construct a new HandController instance.
+ *
+ * Initializes internal state for trajectory interpolation and telemetry.
+ * @param side Hand::Side indicating left or right hand
+ * @param bus Reference to the shared ServoBus instance
+ */
+
 // ============================================================================
 // PUBLIC API
 // ============================================================================
@@ -65,6 +73,15 @@ void HandController::setTargetGrip(GripType grip, uint16_t duration_ms)
     HAND_DEBUG("Grip set: %s (side=%d, duration=%dms)", 
                grip_cfg.name.data(), static_cast<int>(side_), duration_ms);
 }
+
+/**
+ * @brief Schedule a target grip for this hand.
+ *
+ * Sets up start/target positions and timing for all fingers. Movement is
+ * applied non-blocking via the `update()` method.
+ * @param grip Target `GripType`
+ * @param duration_ms Interpolation duration in milliseconds
+ */
 
 void HandController::update()
 {
@@ -178,6 +195,14 @@ void HandController::update()
     }
 }
 
+/**
+ * @brief Periodic non-blocking update.
+ *
+ * Performs trajectory interpolation, sends sync write packets to servos and
+ * advances the round-robin telemetry state machine. Intended to be called
+ * from the main loop at ~100Hz.
+ */
+
 // ============================================================================
 // PRIVATE HELPERS
 // ============================================================================
@@ -191,6 +216,12 @@ float HandController::smoothstep(float t)
     // Cubic smoothstep: 3t² - 2t³ -> S-Curve easing
     return t * t * (3.0f - 2.0f * t);
 }
+
+/**
+ * @brief Cubic smoothstep easing function.
+ * @param t Normalized time in [0,1]
+ * @return float Interpolation factor
+ */
 
 uint16_t HandController::interpolatePosition(size_t finger_idx, uint32_t now)
 {
@@ -215,6 +246,13 @@ uint16_t HandController::interpolatePosition(size_t finger_idx, uint32_t now)
     return static_cast<uint16_t>(pos);
 }
 
+/**
+ * @brief Compute interpolated servo position for a finger.
+ * @param finger_idx Finger index (0..FINGER_COUNT-1)
+ * @param now Current time (HAL_GetTick())
+ * @return uint16_t Servo position in native units (0..4095)
+ */
+
 void HandController::predictGraspAdjustment(uint8_t finger_idx, int16_t current)
 {
     // Placeholder for future AI-based closed-loop control (X-CUBE-AI)
@@ -237,5 +275,14 @@ void HandController::predictGraspAdjustment(uint8_t finger_idx, int16_t current)
     //     // target_pos_[finger_idx] = current_pos_[finger_idx];
     // }
 }
+
+/**
+ * @brief Placeholder for future AI-based grasp adjustment.
+ *
+ * Analyzes measured current for contact/slip detection and may modify
+ * trajectories in future iterations.
+ * @param finger_idx Finger index
+ * @param current Measured current in mA
+ */
 
 } // namespace HandControl

@@ -20,6 +20,11 @@ SerialCommander::SerialCommander(HandControl::ISerialPort& port) noexcept
 {
 }
 
+/**
+ * @brief Construct a new SerialCommander.
+ * @param port Reference to an ISerialPort used for responses/transmit
+ */
+
 bool SerialCommander::feedByte(uint8_t b) noexcept {
     // ISR-safe ring buffer push (single producer from ISR)
     uint16_t head = rx_head_;
@@ -33,6 +38,12 @@ bool SerialCommander::feedByte(uint8_t b) noexcept {
     rx_head_ = next; // volatile write
     return true;
 }
+
+/**
+ * @brief Push a received byte into the ISR-safe ring buffer.
+ * @param b Byte received from UART ISR
+ * @return true if accepted, false if buffer full
+ */
 
 void SerialCommander::processCommand() noexcept {
     // If overflow, report and clear buffer
@@ -115,10 +126,23 @@ void SerialCommander::processCommand() noexcept {
     }
 }
 
+/**
+ * @brief Parse and execute complete ASCII commands from the buffer.
+ *
+ * Should be called from non-ISR context (main loop). Returns immediately
+ * after processing available complete lines.
+ */
+
 void SerialCommander::sendResponse(const char* msg, size_t len) noexcept {
     if (len == 0 || !msg) return;
     (void) port_.transmitDMA(reinterpret_cast<const uint8_t*>(msg), static_cast<uint16_t>(len));
 }
+
+/**
+ * @brief Send a textual response via the configured port.
+ * @param msg Pointer to message bytes
+ * @param len Length of message
+ */
 
 bool SerialCommander::parseGripCommand(const uint8_t* data, size_t len,
                                        Hand::Side& outSide, uint8_t& outGripId) noexcept
@@ -159,3 +183,12 @@ bool SerialCommander::parseGripCommand(const uint8_t* data, size_t len,
     outGripId = static_cast<uint8_t>(val);
     return true;
 }
+
+/**
+ * @brief Parse a grip command of the form "G:<Side>:<GripID>".
+ * @param data Input bytes
+ * @param len Length of input
+ * @param outSide Parsed Hand::Side
+ * @param outGripId Parsed numeric Grip ID
+ * @return true on success, false on parse error
+ */
