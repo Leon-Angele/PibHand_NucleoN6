@@ -4,8 +4,8 @@
  * @author Leon Angele
  * @date 2026-05-08
  *
- * Provides `Stm32UartDmaPort`, `PollUartPort` and `ServoBus` classes
- * implementing an RX-before-TX protocol for STS3215 servos.
+ * Provides `Stm32UartDmaPort` and `ServoBus` classes implementing
+ * an RX-before-TX protocol for STS3215 servos.
  */
 
 #include "hand/servo.hpp"
@@ -153,29 +153,6 @@ void Stm32UartDmaPort::onRxComplete(UART_HandleTypeDef* huart)
  * @brief Static callback router for RX complete events from HAL.
  * @param huart UART handle received from HAL
  */
-
-// ============================================================================
-// LAYER 1: HARDWARE ABSTRACTION - PollUartPort (VCP only)
-// ============================================================================
-
-PollUartPort::PollUartPort(UART_HandleTypeDef* huart, uint32_t timeout_ms)
-    : huart_(huart), timeout_ms_(timeout_ms)
-{
-}
-
-/**
- * @brief Blocking transmit implementation for VCP/debug.
- * @param data Message bytes
- * @param length Byte count
- * @return true on success
- */
-
-bool PollUartPort::transmitDMA(const uint8_t* data, uint16_t length)
-{
-    // Blocking transmit for VCP (debug output only)
-    HAL_StatusTypeDef ret = HAL_UART_Transmit(huart_, const_cast<uint8_t*>(data), length, timeout_ms_);
-    return (ret == HAL_OK);
-}
 
 // ============================================================================
 // LAYER 2: PROTOCOL LAYER - ServoBus

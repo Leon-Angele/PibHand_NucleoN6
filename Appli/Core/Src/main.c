@@ -46,6 +46,8 @@ CACHEAXI_HandleTypeDef hcacheaxi;
 
 UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef handle_GPDMA1_Channel3;
+DMA_HandleTypeDef handle_GPDMA1_Channel2;
 DMA_HandleTypeDef handle_GPDMA1_Channel1;
 DMA_HandleTypeDef handle_GPDMA1_Channel0;
 
@@ -55,9 +57,16 @@ RAMCFG_HandleTypeDef hramcfg_SRAM5;
 RAMCFG_HandleTypeDef hramcfg_SRAM6;
 
 /* USER CODE BEGIN PV */
-static uint8_t vcp_rx_byte;
+// VCP RX DMA circular buffer (non-cacheable for DMA coherency)
+#define VCP_RX_BUF_SIZE 64
+__attribute__((section(".noncacheable"), aligned(32))) 
+static uint8_t vcp_rx_dma_buffer[VCP_RX_BUF_SIZE];
+static uint32_t vcp_rx_last_pos = 0;
+
+// VCP TX DMA state
+static volatile uint8_t vcp_tx_busy = 0;
+
 static uint32_t last_hand_tick = 0;
-static uint32_t rx_count = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -122,36 +131,32 @@ int main(void)
   printf("Init start\r\n");
   hand_bridge_init();
 
-  
-  HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
+  // Start VCP RX DMA in circular mode for continuous reception
+  HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    uint32_t now = HAL_GetTick();
+    // Update hand controllers (interpolation, telemetry polling)
+    hand_bridge_update();
     
-    // Hand Controller mit 100Hz (10ms) laufen lassen!
-    if ((now - last_hand_tick) >= 10U) 
-    {
-      last_hand_tick = now;
-      hand_bridge_update();
+    // Process VCP RX from DMA circular buffer
+    uint32_t current_pos = VCP_RX_BUF_SIZE - __HAL_DMA_GET_COUNTER(hlpuart1.hdmarx);
+    while (vcp_rx_last_pos != current_pos) {
+      // D-Cache invalidate for this byte (ensure fresh data from DMA)
+      SCB_InvalidateDCache_by_Addr((uint32_t*)&vcp_rx_dma_buffer[vcp_rx_last_pos], 1);
+      commander_bridge_feed_byte(vcp_rx_dma_buffer[vcp_rx_last_pos]);
+      vcp_rx_last_pos = (vcp_rx_last_pos + 1) % VCP_RX_BUF_SIZE;
     }
     
-    // LED blinken lassen (alle 500ms)
-    static uint32_t last_led_tick = 0;
-    if ((now - last_led_tick) >= 500U)
-    {
-      last_led_tick = now;
-      BSP_LED_Toggle(LED_GREEN);
-      if (rx_count > 0) {
-        printf("[DBG] VCP RX bytes: %lu\r\n", rx_count);
-        rx_count = 0;
-      }
-    }
-    
+    // Process complete commands from SerialCommander
     commander_bridge_process();
+    
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
@@ -202,6 +207,10 @@ static void MX_GPDMA1_Init(void)
     HAL_NVIC_EnableIRQ(GPDMA1_Channel0_IRQn);
     HAL_NVIC_SetPriority(GPDMA1_Channel1_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(GPDMA1_Channel1_IRQn);
+    HAL_NVIC_SetPriority(GPDMA1_Channel2_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(GPDMA1_Channel2_IRQn);
+    HAL_NVIC_SetPriority(GPDMA1_Channel3_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(GPDMA1_Channel3_IRQn);
 
   /* USER CODE BEGIN GPDMA1_Init 1 */
 
@@ -389,6 +398,16 @@ static void MX_RAMCFG_Init(void)
   {
     Error_Handler();
   }
+  /* set GPDMA1 channel 2 used by LPUART1 */
+  if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel2,DMA_CHANNEL_SEC|DMA_CHANNEL_PRIV|DMA_CHANNEL_SRC_SEC|DMA_CHANNEL_DEST_SEC)!= HAL_OK )
+  {
+    Error_Handler();
+  }
+  /* set GPDMA1 channel 3 used by LPUART1 */
+  if (HAL_DMA_ConfigChannelAttributes(&handle_GPDMA1_Channel3,DMA_CHANNEL_SEC|DMA_CHANNEL_PRIV|DMA_CHANNEL_SRC_SEC|DMA_CHANNEL_DEST_SEC)!= HAL_OK )
+  {
+    Error_Handler();
+  }
 
   /* set up GPIO configuration */
   HAL_GPIO_ConfigPinAttributes(GPIOA,GPIO_PIN_11,GPIO_PIN_SEC|GPIO_PIN_NPRIV);
@@ -436,32 +455,52 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
   PUTCHAR_PROTOTYPE
   {
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    // Wait for previous TX to complete (semi-blocking for printf)
+    while (vcp_tx_busy) { __NOP(); }
+    
+    // D-Cache clean before DMA TX
+    SCB_CleanDCache_by_Addr((uint32_t*)&ch, 1);
+    
+    vcp_tx_busy = 1;
+    HAL_UART_Transmit_DMA(&hlpuart1, (uint8_t *)&ch, 1);
+    
+    // Wait for this TX to complete (ensure char is sent before returning)
+    while (vcp_tx_busy) { __NOP(); }
     return ch;
   }
 
   int _write(int fd, char * ptr, int len){
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *) ptr, (uint16_t)len, HAL_MAX_DELAY);
+    // Wait for previous TX to complete (semi-blocking for printf)
+    while (vcp_tx_busy) { __NOP(); }
+    
+    // D-Cache clean before DMA TX
+    SCB_CleanDCache_by_Addr((uint32_t*)ptr, len);
+    
+    vcp_tx_busy = 1;
+    HAL_UART_Transmit_DMA(&hlpuart1, (uint8_t *) ptr, (uint16_t)len);
+    
+    // Wait for this TX to complete (ensure message is sent before returning)
+    while (vcp_tx_busy) { __NOP(); }
     return len;
   }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-    // USART3 (servo bus): DMA TX completion routed to Stm32UartDmaPort
-    // LPUART1 (VCP): uses blocking TX, no callback needed
+    if (huart->Instance == LPUART1)
+    {
+        // LPUART1 (VCP): DMA TX completion for printf
+        vcp_tx_busy = 0;
+    }
+    
+    // Route all UART TX completions to Stm32UartDmaPort (includes USART3 and LPUART1)
     bridge_on_uart_tx(huart);
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance == LPUART1)
-  {
-    // LPUART1 (VCP): interrupt-based RX for serial commander
-    rx_count++;
-    commander_bridge_feed_byte(vcp_rx_byte);
-    HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
-  }
-  else if (huart->Instance == USART3)
+  // Note: LPUART1 uses circular DMA, no RX complete callback needed
+  // Only USART3 (servo bus) needs RX complete callback
+  if (huart->Instance == USART3)
   {
     // USART3 (servo bus): DMA RX completion routed to Stm32UartDmaPort
     bridge_on_uart_rx(huart);

@@ -27,11 +27,11 @@ extern UART_HandleTypeDef hlpuart1;  // VCP
 // C executor callback pointer
 static hand_grip_executor_t c_executor_cb = nullptr;
 
-// ASYNC DMA-based servo port + blocking VCP port
+// ASYNC DMA-based ports for both servo bus and VCP
 static Stm32UartDmaPort servoPort(&huart3);
-static PollUartPort vpcPort(&hlpuart1, 1000);
+static Stm32UartDmaPort vcpPort(&hlpuart1);
 static ServoBus servoBus(servoPort);
-static SerialCommander commander(vpcPort);
+static SerialCommander commander(vcpPort);
 static HandController rightHand(Hand::Side::Right, servoBus);
 static HandController leftHand(Hand::Side::Left, servoBus);
 

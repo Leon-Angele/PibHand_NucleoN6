@@ -43,6 +43,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 UART_HandleTypeDef hlpuart1;
+DMA_HandleTypeDef handle_GPDMA1_Channel3;
+DMA_HandleTypeDef handle_GPDMA1_Channel2;
 
 XSPI_HandleTypeDef hxspi2;
 
@@ -293,6 +295,12 @@ static void MX_GPDMA1_Init(void)
 
   /* Peripheral clock enable */
   __HAL_RCC_GPDMA1_CLK_ENABLE();
+
+  /* GPDMA1 interrupt Init */
+    HAL_NVIC_SetPriority(GPDMA1_Channel2_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(GPDMA1_Channel2_IRQn);
+    HAL_NVIC_SetPriority(GPDMA1_Channel3_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(GPDMA1_Channel3_IRQn);
 
   /* USER CODE BEGIN GPDMA1_Init 1 */
 

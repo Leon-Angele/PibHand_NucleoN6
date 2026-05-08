@@ -15,6 +15,32 @@
 
 using namespace HandControl;
 
+// ============================================================================
+// VCP UART PORT IMPLEMENTATION
+// ============================================================================
+
+PollUartPort::PollUartPort(UART_HandleTypeDef* huart, uint32_t timeout_ms)
+    : huart_(huart), timeout_ms_(timeout_ms)
+{
+}
+
+/**
+ * @brief Blocking transmit implementation for VCP/debug.
+ * @param data Message bytes
+ * @param length Byte count
+ * @return true on success
+ */
+bool PollUartPort::transmitDMA(const uint8_t* data, uint16_t length)
+{
+    // Blocking transmit for VCP (debug output only)
+    HAL_StatusTypeDef ret = HAL_UART_Transmit(huart_, const_cast<uint8_t*>(data), length, timeout_ms_);
+    return (ret == HAL_OK);
+}
+
+// ============================================================================
+// SERIAL COMMANDER IMPLEMENTATION
+// ============================================================================
+
 SerialCommander::SerialCommander(HandControl::ISerialPort& port) noexcept
 : port_(port), executor_(nullptr), rx_head_(0), rx_tail_(0), overflow_flag_(false)
 {

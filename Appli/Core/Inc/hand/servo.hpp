@@ -6,6 +6,8 @@
  *
  * Architecture: 3-Layer system with strict non-blocking design + RX-before-TX
  * for D-Cache coherency on Cortex-M55.
+ *
+ * Provides Stm32UartDmaPort (DMA-based UART wrapper) and ServoBus (STS3215 protocol).
  */
 #ifndef SERVO_HPP
 #define SERVO_HPP
@@ -132,26 +134,6 @@ private:
     static constexpr uint8_t MAX_INSTANCES = 2;
     static Stm32UartDmaPort* instances_[MAX_INSTANCES];
     static uint8_t instance_count_;
-};
-
-/**
- * @brief Polling UART port (blocking TX, no DMA) - for VCP/debug only
- */
-class PollUartPort : public ISerialPort {
-public:
-    explicit PollUartPort(UART_HandleTypeDef* huart, uint32_t timeout_ms = 1000);
-    ~PollUartPort() override = default;
-
-    bool transmitDMA(const uint8_t* data, uint16_t length) override;
-    bool receiveDMA(uint8_t*, uint16_t) override { return false; }
-    bool isTxDone() const override { return true; }
-    bool isRxDone() const override { return false; }
-    void process() override {}
-    void abortRx() override {}
-
-private:
-    UART_HandleTypeDef* huart_;
-    uint32_t timeout_ms_;
 };
 
 // ============================================================================

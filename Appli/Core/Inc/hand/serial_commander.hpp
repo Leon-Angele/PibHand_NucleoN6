@@ -18,6 +18,34 @@
 #include <cstddef>
 #include <array>
 
+// ============================================================================
+// VCP UART PORT WRAPPER
+// ============================================================================
+
+/**
+ * @brief Polling UART port (blocking TX, no DMA) - for VCP/debug only
+ */
+class PollUartPort : public HandControl::ISerialPort {
+public:
+    explicit PollUartPort(UART_HandleTypeDef* huart, uint32_t timeout_ms = 1000);
+    ~PollUartPort() override = default;
+
+    bool transmitDMA(const uint8_t* data, uint16_t length) override;
+    bool receiveDMA(uint8_t*, uint16_t) override { return false; }
+    bool isTxDone() const override { return true; }
+    bool isRxDone() const override { return false; }
+    void process() override {}
+    void abortRx() override {}
+
+private:
+    UART_HandleTypeDef* huart_;
+    uint32_t timeout_ms_;
+};
+
+// ============================================================================
+// COMMAND EXECUTOR INTERFACE
+// ============================================================================
+
 class ICommandExecutor {
 public:
     virtual ~ICommandExecutor() = default;
