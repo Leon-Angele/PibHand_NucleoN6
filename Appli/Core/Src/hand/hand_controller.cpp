@@ -179,10 +179,17 @@ void HandController::update()
             break;
             
         case BusState::TIMEOUT:
-            // Timeout occurred - log error and advance to next finger
+            // Timeout occurred - log error (rate-limited) and advance to next finger
             {
-                uint8_t servo_id = Hand::getServoID(side_, static_cast<Finger>(poll_finger_idx_));
-                HAND_DEBUG("Read timeout for servo %d (finger %d)", servo_id, poll_finger_idx_);
+                // Global rate-limited logging: only log every 10 seconds total
+                uint32_t now = HAL_GetTick();
+                static uint32_t last_timeout_log_ms = 0;
+                constexpr uint32_t TIMEOUT_LOG_INTERVAL_MS = 10000; // 10s
+                if ((now - last_timeout_log_ms) > TIMEOUT_LOG_INTERVAL_MS) {
+                    uint8_t servo_id = Hand::getServoID(side_, static_cast<Finger>(poll_finger_idx_));
+                    HAND_DEBUG("Read timeout for servo %d (finger %d)", servo_id, poll_finger_idx_);
+                    last_timeout_log_ms = now;
+                }
                 
                 // Reset bus state and advance to next finger
                 bus_.resetState();

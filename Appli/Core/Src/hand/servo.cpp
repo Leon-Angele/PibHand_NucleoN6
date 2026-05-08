@@ -200,7 +200,14 @@ void ServoBus::poll()
             }
             // Check timeout (10ms as per spec)
             else if ((HAL_GetTick() - operation_start_ms_) > 10) {
-                HAND_DEBUG("RX timeout (ID=%d)", last_read_id_);
+                // Global rate-limited logging: only log every 10 seconds total
+                uint32_t now = HAL_GetTick();
+                static uint32_t last_timeout_log_ms = 0;
+                constexpr uint32_t TIMEOUT_LOG_INTERVAL_MS = 10000; // 10s
+                if ((now - last_timeout_log_ms) > TIMEOUT_LOG_INTERVAL_MS) {
+                    HAND_DEBUG("RX timeout (ID=%d)", last_read_id_);
+                    last_timeout_log_ms = now;
+                }
                 port_.abortRx();
                 state_ = BusState::TIMEOUT;
             }

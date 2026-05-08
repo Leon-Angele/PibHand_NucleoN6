@@ -66,7 +66,6 @@ static uint32_t vcp_rx_last_pos = 0;
 // VCP TX DMA state
 static volatile uint8_t vcp_tx_busy = 0;
 
-static uint32_t last_hand_tick = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
