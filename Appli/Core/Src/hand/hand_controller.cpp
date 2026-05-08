@@ -93,7 +93,7 @@ void HandController::update()
         }
         
         positions[i] = current_pos_[i];
-        times[i] = 100;  // Move time for next update cycle (100ms = 10Hz update rate)
+        times[i] = 10;  // Move time for next update cycle (10ms = 100Hz update rate)
     }
     
     // Send positions to servos (fire and forget, non-blocking)
@@ -183,7 +183,7 @@ float HandController::smoothstep(float t)
     if (t <= 0.0f) return 0.0f;
     if (t >= 1.0f) return 1.0f;
     
-    // Cubic smoothstep: 3t² - 2t³
+    // Cubic smoothstep: 3t² - 2t³ -> S-Curve easing
     return t * t * (3.0f - 2.0f * t);
 }
 
