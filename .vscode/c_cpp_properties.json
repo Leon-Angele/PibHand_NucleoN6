@@ -3,6 +3,7 @@
     {
       "name": "STM32N6",
       "includePath": [
+        "${workspaceFolder}/**",
         "${workspaceFolder}/Appli/Core/Inc",
         "${workspaceFolder}/Appli/Core/Inc/hand",
         "${workspaceFolder}/Appli/Core/Src/hand",
@@ -10,7 +11,6 @@
         "${workspaceFolder}/Drivers/CMSIS/Include",
         "${workspaceFolder}/Drivers/BSP/STM32N6xx_Nucleo",
         "${workspaceFolder}/Middlewares",
-        "${workspaceFolder}/HandSoruce",
         "${workspaceFolder}/Drivers"
       ],
       "defines": [
@@ -23,12 +23,13 @@
       "intelliSenseMode": "gcc-arm",
       "browse": {
         "path": [
+          "${workspaceFolder}",
           "${workspaceFolder}/Appli/Core/Inc",
           "${workspaceFolder}/Drivers/STM32N6xx_HAL_Driver/Inc",
           "${workspaceFolder}/Drivers/CMSIS/Include",
           "${workspaceFolder}/HandSoruce"
         ],
-        "limitSymbolsToIncludedHeaders": true
+        "limitSymbolsToIncludedHeaders": false
       }
     }
   ],
