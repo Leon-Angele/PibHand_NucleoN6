@@ -24,6 +24,7 @@
 
  Der `SerialCommander` verarbeitet Befehle im folgenden Format:
 
+ **BAUD:** `460800`
  **Syntax:** `G:<Side>:<GripID>\n`
 
  * **Side**: `0` für die linke Hand, `1` für die rechte Hand.

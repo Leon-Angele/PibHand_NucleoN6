@@ -158,6 +158,7 @@ void HandController::update()
                     
                   
                     #if DEBUG_PRINTS
+                    /*
                     static int16_t currents[6] = {0};
                     currents[poll_finger_idx_] = current;
                     static uint32_t last_log_ms = 0;
@@ -167,6 +168,7 @@ void HandController::update()
                                 currents[3], currents[4], currents[5]);
                         last_log_ms = now;
                     }
+                        */
                     #endif
                 }
                 
