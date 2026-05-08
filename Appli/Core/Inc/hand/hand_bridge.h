@@ -28,8 +28,8 @@ void hand_bridge_set_executor(hand_grip_executor_t cb) ;
 /* Initialize bridge (must be called after peripheral init) */
 void hand_bridge_init(void) ;
 
-/* Trigger a grip on given side with duration (ms) */
-bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip, uint16_t duration_ms) ;
+/* Trigger a grip on given side (speed from config) */
+bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip);
 
 /* Called from main loop to update both hands (100Hz) */
 void hand_bridge_update(void) ;

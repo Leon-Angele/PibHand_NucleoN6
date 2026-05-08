@@ -45,10 +45,14 @@ public:
     
     /**
      * @brief Set target grip with smooth trajectory
+     * 
+     * Each finger moves at its configured maxSpeed from AxisSettings.
+     * Movement duration is calculated individually per finger based on
+     * distance and speed: duration = (delta * 1000) / maxSpeed
+     * 
      * @param grip Target grip type
-     * @param duration_ms Interpolation duration in milliseconds
      */
-    void setTargetGrip(GripType grip, uint16_t duration_ms);
+    void setTargetGrip(GripType grip);
     
     /**
      * @brief Non-blocking update (called at ~100Hz from main loop)

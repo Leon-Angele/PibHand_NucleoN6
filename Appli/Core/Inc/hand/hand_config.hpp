@@ -70,12 +70,13 @@ enum class GripType : uint8_t {
 /**
  * @brief Physische Limits und Parameter eines einzelnen Motors
  * @note Alle Positionen/Offsets sind in nativen SmartServo-Einheiten (0..4095).
+ *       Servo-Range: 0-4095 entspricht 360° (voller Kreis)
  */
 struct FingerConfig {
     std::string_view name;
     uint16_t minPos;      // 0 in Servo-Einheiten
     uint16_t maxPos;      // Max (4095) in Servo-Einheiten
-    uint16_t maxSpeed;    // Standard: 2000
+    uint16_t maxSpeed;    // in Grad/s (0-4095 = 360°)
     uint16_t maxCurrent;  // in mA
 };
 
@@ -97,16 +98,16 @@ struct GripConfig {
  *   - name: human-readable axis name
  *   - minPos: minimum servo position (native units, 0)
  *   - maxPos: maximum servo position (native units, 4095)
- *   - maxSpeed: maximum speed (implementation-defined units)
+ *   - maxSpeed: maximum speed in degrees per second (0-4095 = 360°)
  *   - maxCurrent: maximum allowed current in mA
  */
 constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> AxisSettings = {{
-    {"Thumb Stretch", 0, 4095, 100, 1500},
-    {"Index Stretch", 0, 4095, 100, 1500},
-    {"Middle Stretch", 0, 4095, 100, 1500},
-    {"Ring Stretch", 0, 4095, 100, 1500},
-    {"Pinky Stretch", 0, 4095, 100, 1500},
-    {"Thumb Opposition", 0, 4095, 100, 1500}
+    {"Thumb Stretch", 0, 4095, 50, 1500},       
+    {"Index Stretch", 0, 4095, 50, 1500},       
+    {"Middle Stretch", 0, 4095, 50, 1500},      
+    {"Ring Stretch", 0, 4095, 50, 1500},        
+    {"Pinky Stretch", 0, 4095, 50, 1500},       
+    {"Thumb Opposition", 0, 4095, 50, 1500}     
 }};
 
 /**

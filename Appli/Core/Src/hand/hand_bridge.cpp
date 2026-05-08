@@ -40,9 +40,9 @@ class DefaultGripExecutor : public ICommandExecutor {
 public:
     bool executeGrip(Hand::Side side, GripType grip) override {
         if (side == Hand::Side::Right) {
-            rightHand.setTargetGrip(grip, 1000);
+            rightHand.setTargetGrip(grip);
         } else {
-            leftHand.setTargetGrip(grip, 1000);
+            leftHand.setTargetGrip(grip);
         }
         return true;
     }
@@ -96,21 +96,20 @@ void hand_bridge_set_executor(hand_grip_executor_t cb) {
  * @brief Set a target grip on the specified hand.
  *
  * This is a C-callable helper that maps numeric `side` and `grip` values to
- * the internal C++ enums and schedules a smooth trajectory with the given
- * duration.
+ * the internal C++ enums and schedules a smooth trajectory. Each finger moves
+ * at its configured maxSpeed from AxisSettings.
  *
  * @param side 0 = Left, 1 = Right
  * @param grip Grip identifier as `uint8_t` (maps to `GripType`)
- * @param duration_ms Duration of the interpolated movement in milliseconds
  * @return true if the request was accepted
  */
-bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip, uint16_t duration_ms) {
+bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip) {
     Hand::Side s = (side == 1) ? Hand::Side::Right : Hand::Side::Left;
     HandControl::GripType g = static_cast<HandControl::GripType>(grip);
     if (s == Hand::Side::Right) {
-        rightHand.setTargetGrip(g, duration_ms);
+        rightHand.setTargetGrip(g);
     } else {
-        leftHand.setTargetGrip(g, duration_ms);
+        leftHand.setTargetGrip(g);
     }
     return true;
 }

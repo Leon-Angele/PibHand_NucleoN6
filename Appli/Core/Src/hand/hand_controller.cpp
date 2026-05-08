@@ -13,6 +13,9 @@
 
 namespace HandControl {
 
+// Microstep time (ms) used when controller drives micro-steps
+static constexpr uint16_t MICROSTEP_TIME = 10;
+
 // ============================================================================
 // CONSTRUCTOR
 // ============================================================================
@@ -45,7 +48,7 @@ HandController::HandController(Hand::Side side, ServoBus& bus)
 // PUBLIC API
 // ============================================================================
 
-void HandController::setTargetGrip(GripType grip, uint16_t duration_ms)
+void HandController::setTargetGrip(GripType grip)
 {
     // Lookup grip configuration from database
     if (static_cast<size_t>(grip) >= static_cast<size_t>(GripType::Count)) {
@@ -57,30 +60,51 @@ void HandController::setTargetGrip(GripType grip, uint16_t duration_ms)
     
     uint32_t now = HAL_GetTick();
     
-    // Setup trajectory for all 6 fingers
+    // Setup trajectory for all 6 fingers with individual speed control
     for (size_t i = 0; i < FINGER_COUNT; ++i) {
         start_pos_[i] = current_pos_[i];
         target_pos_[i] = grip_cfg.positions[i];
         start_time_ms_[i] = now;
-        duration_ms_[i] = duration_ms;
         
-        // Only mark as moving if there's actual movement
-        if (start_pos_[i] != target_pos_[i]) {
+        // Calculate individual duration based on distance and configured maxSpeed
+        uint16_t delta = (target_pos_[i] > start_pos_[i]) 
+                         ? (target_pos_[i] - start_pos_[i]) 
+                         : (start_pos_[i] - target_pos_[i]);
+        
+        uint16_t max_speed_deg_per_sec = AxisSettings[i].maxSpeed;  // degrees per second
+        
+        // Handle edge cases
+        if (delta == 0) {
+            duration_ms_[i] = 0;
+            moving_[i] = false;
+        } else if (max_speed_deg_per_sec == 0) {
+            // Fallback to default speed if maxSpeed is zero
+            duration_ms_[i] = (delta * 1000) / 1000;  // 1000 units/s default
+            moving_[i] = true;
+            HAND_DEBUG("Warning: maxSpeed=0 for finger %d, using default 1000 units/s", i);
+        } else {
+            // Convert degrees/s to servo units/s: 360° = 4095 units
+            // units/s = deg/s * (4095 / 360)
+            uint32_t max_speed_units_per_sec = (static_cast<uint32_t>(max_speed_deg_per_sec) * 4095) / 360;
+            
+            // Normal case: duration = distance / speed
+            duration_ms_[i] = (static_cast<uint32_t>(delta) * 1000) / max_speed_units_per_sec;
             moving_[i] = true;
         }
     }
     
-    HAND_DEBUG("Grip set: %s (side=%d, duration=%dms)", 
-               grip_cfg.name.data(), static_cast<int>(side_), duration_ms);
+    HAND_DEBUG("Grip set: %s (side=%d, per-finger speeds)", 
+               grip_cfg.name.data(), static_cast<int>(side_));
 }
 
 /**
  * @brief Schedule a target grip for this hand.
  *
- * Sets up start/target positions and timing for all fingers. Movement is
- * applied non-blocking via the `update()` method.
+ * Sets up start/target positions and timing for all fingers. Each finger
+ * moves at its configured maxSpeed from AxisSettings. Movement is applied
+ * non-blocking via the `update()` method with smoothstep interpolation.
+ * 
  * @param grip Target `GripType`
- * @param duration_ms Interpolation duration in milliseconds
  */
 
 void HandController::update()
@@ -100,22 +124,24 @@ void HandController::update()
         // Get servo ID for this finger
         servo_ids[i] = Hand::getServoID(side_, static_cast<Finger>(i));
         
-        // Interpolate position
+        // Smoothstep interpolation for smooth S-curve movement
         if (moving_[i]) {
-            current_pos_[i] = interpolatePosition(i, now);
-            
-            // Check if target reached
             uint32_t elapsed = now - start_time_ms_[i];
-            if (elapsed >= duration_ms_[i]) {
+            
+            // Check if movement is complete
+            if (duration_ms_[i] == 0 || elapsed >= duration_ms_[i]) {
                 current_pos_[i] = target_pos_[i];
                 moving_[i] = false;
             } else {
+                // Use smoothstep interpolation for S-curve
+                current_pos_[i] = interpolatePosition(i, now);
                 any_moving = true;
             }
         }
         
         positions[i] = current_pos_[i];
-        times[i] = 10;  // Move time for next update cycle (10ms = 100Hz update rate)
+        // Use microstep time for smooth servo execution
+        times[i] = MICROSTEP_TIME;
     }
     
     // Send positions to servos (fire and forget, non-blocking)

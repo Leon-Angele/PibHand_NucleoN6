@@ -136,6 +136,7 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  BSP_LED_On(LED_GREEN);
   while (1)
   {
     // Update hand controllers (interpolation, telemetry polling)
