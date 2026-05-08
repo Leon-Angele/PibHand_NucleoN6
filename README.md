@@ -35,17 +35,19 @@
 
  ## 🖐 Verfügbare Griffe
 
- Die Griff-Positionen sind in `hand_config.hpp` in Tinkerforge-Einheiten (0–9000) definiert und werden automatisch auf das Servo-Protokoll (0–4095) skaliert:
+ Die Griff-Positionen sind in `hand_config.hpp` als native Servo‑Einheiten (0–4095) definiert. Die hier gezeigten Werte entsprechen direkt den Einträgen in der `GripDatabase`:
 
- | ID | Name | Finger-Konfiguration |
+ | ID | Name | Finger-Konfiguration (0–4095) |
  | :--- | :--- | :--- |
- | 0 | **OPEN** | Alle Finger auf Position 0 |
- | 1 | **SPITZGRIFF** | Alle Gelenke auf 9000 (Vollanschlag) |
- | 2 | **DREIPUNKTGRIFF** | Daumen/Zeige/Mittel auf 7000, Rest 0 |
- | 3 | **SCHLUESSELGRIFF** | Daumen 6000, Zeigefinger 3000 |
- | 4 | **ZYLINDERGRIFF** | Alle Finger auf 8000, Daumenrotation 3000 |
- | 5 | **HAKENGRIFF** | Alle Finger außer Daumen auf 8000 |
- | 6 | **SPHAERISCHER GRIFF** | Alle Finger auf 6000, Daumenrotation 4000 |
+ | 0 | **OPEN** | {0, 0, 0, 0, 0, 0} |
+ | 1 | **SPITZGRIFF** | {4095, 4095, 4095, 4095, 4095, 4095} |
+ | 2 | **DREIPUNKTGRIFF** | {3185, 3185, 3185, 0, 0, 2047} |
+ | 3 | **SCHLUESSELGRIFF** | {2730, 1365, 0, 0, 0, 2730} |
+ | 4 | **ZYLINDERGRIFF** | {3640, 3640, 3640, 3640, 3640, 1365} |
+ | 5 | **HAKENGRIFF** | {0, 3640, 3640, 3640, 3640, 0} |
+ | 6 | **SPHAERISCHER GRIFF** | {2730, 2730, 2730, 2730, 2730, 1820} |
+ | 7 | **Stinkefinger** | {4095, 4095, 0, 4095, 4095, 2000} |
+ 
 
  ## 📂 Software-Architektur
 

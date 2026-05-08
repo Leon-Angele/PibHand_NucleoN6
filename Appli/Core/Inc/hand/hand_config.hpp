@@ -61,6 +61,7 @@ enum class GripType : uint8_t {
     Zylindergriff,
     Hakengriff,
     SphaerischerGriff,
+    Mittelfinger,
     Count
 };
 
@@ -108,6 +109,7 @@ constexpr std::array<GripConfig, static_cast<size_t>(GripType::Count)> GripDatab
     {GripType::Zylindergriff, "ZYLINDERGRIFF", {3640, 3640, 3640, 3640, 3640, 1365}},
     {GripType::Hakengriff, "HAKENGRIFF", {0, 3640, 3640, 3640, 3640, 0}},
     {GripType::SphaerischerGriff, "SPHAERISCHER_GRIFF", {2730, 2730, 2730, 2730, 2730, 1820}}
+    ,{GripType::Mittelfinger, "MITTELFINGER", {4095, 4095, 0, 4095, 4095, 2000}}
 }};
 
 /**
