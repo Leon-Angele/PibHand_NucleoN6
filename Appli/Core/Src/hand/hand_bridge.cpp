@@ -1,5 +1,15 @@
 #include "hand/hand_bridge.h"
 
+/**
+ * @file hand_bridge.cpp
+ * @brief C API bridge between firmware `main` and the C++ HandControl subsystem.
+ * @author Leon Angele
+ * @date 2026-05-08
+ *
+ * Provides C-callable wrappers to initialize, update and command the
+ * C++ `HandController` instances from the rest of the C application.
+ */
+
 #include "hand/hand_config.hpp"
 #include "hand/servo.hpp"
 #include "hand/hand_controller.hpp"
@@ -52,8 +62,7 @@ static CExecutorAdapter cExecutorAdapter;
 extern "C" {
 
 void hand_bridge_init(void) {
-    // No initialization needed - DMA is started on-demand per read operation (RX-before-TX)
-    // Set default executor
+
     commander.setExecutor(&defaultExecutor);
     printf("[BRIDGE] Hand controller initialized\r\n");
 }

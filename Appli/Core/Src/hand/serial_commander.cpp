@@ -1,4 +1,15 @@
 #include "hand/serial_commander.hpp"
+
+/**
+ * @file serial_commander.cpp
+ * @brief ISR-safe ASCII command parser implementation for hand control.
+ * @author Leon Angele
+ * @date 2026-05-08
+ *
+ * Implements a small ring-buffered parser that accepts commands like
+ * "G:<Side>:<GripID>" and forwards execution to a registered executor.
+ */
+
 #include <cstring>
 #include <cctype>
 

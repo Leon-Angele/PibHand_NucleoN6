@@ -1,12 +1,14 @@
-/*
- * hand_controller.hpp
- * Application layer for robotic hand control with 6 STS3215 servos
- * 
+/**
+ * @file hand_controller.hpp
+ * @brief Application layer for robotic hand control with 6 STS3215 servos.
+ * @author Leon Angele
+ * @date 2026-05-08
+ *
  * Features:
  * - Non-blocking trajectory interpolation (smoothstep)
  * - Round-robin telemetry polling (1 servo per update cycle)
  * - Async state machine for closed-loop control
- * 
+ *
  * Called from main loop at ~100Hz - MUST be non-blocking!
  */
 #ifndef HAND_CONTROLLER_HPP

@@ -1,6 +1,11 @@
-/*
- * hand_controller.cpp
- * Implementation of non-blocking hand controller with round-robin telemetry
+/**
+ * @file hand_controller.cpp
+ * @brief Implementation of the non-blocking HandController and helpers.
+ * @author Leon Angele
+ * @date 2026-05-08
+ *
+ * Non-blocking trajectory interpolation and round-robin telemetry polling
+ * for the robotic hand (6 servos per hand).
  */
 
 #include "hand/hand_controller.hpp"

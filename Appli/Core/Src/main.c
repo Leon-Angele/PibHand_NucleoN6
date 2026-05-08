@@ -121,7 +121,8 @@ int main(void)
   BSP_LED_Init(LED_GREEN);
   printf("Init start\r\n");
   hand_bridge_init();
-  printf("Bridge OK\r\n");
+
+  
   HAL_UART_Receive_IT(&hlpuart1, &vcp_rx_byte, 1);
   /* USER CODE END 2 */
 

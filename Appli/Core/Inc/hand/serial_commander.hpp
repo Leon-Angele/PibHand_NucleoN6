@@ -1,6 +1,11 @@
-// serial_commander.hpp
-// ISR-safe ASCII command parser for ROS2 over USB
-// Protocol: "G:<Side>:<GripID>\n" where <Side> is 0 (Left) or 1 (Right)
+/**
+ * @file serial_commander.hpp
+ * @brief ISR-safe ASCII command parser for hand control via VCP.
+ * @author Leon Angele
+ * @date 2026-05-08
+ *
+ * Protocol: "G:<Side>:<GripID>\n" where <Side> is 0 (Left) or 1 (Right)
+ */
 
 #ifndef SERIAL_COMMANDER_HPP
 #define SERIAL_COMMANDER_HPP

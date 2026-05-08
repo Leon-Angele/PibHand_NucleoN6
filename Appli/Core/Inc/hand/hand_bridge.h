@@ -1,6 +1,16 @@
 #ifndef HAND_BRIDGE_H
 #define HAND_BRIDGE_H
 
+/**
+ * @file hand_bridge.h
+ * @brief C bridge header for controlling the HandControl subsystem from C code.
+ * @author Leon Angele
+ * @date 2026-05-08
+ *
+ * Exposes a minimal C API to set targets, register executors and bridge
+ * UART callbacks into the C++ implementation.
+ */
+
 #include <stdint.h>
 #include <stdbool.h>
 

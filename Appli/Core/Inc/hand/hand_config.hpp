@@ -1,6 +1,8 @@
 /**
  * @file hand_config.hpp
  * @brief Zentrales Konfigurations-Header für die Handsteuerung (6 Servos pro Hand)
+ * @author Leon Angele
+ * @date 2026-05-08
  */
 
 #ifndef HAND_CONFIG_HPP

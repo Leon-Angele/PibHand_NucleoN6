@@ -1,7 +1,11 @@
-/*
- * servo.cpp
- * Implementation of non-blocking async servo driver for STS3215
- * STM32N6 (Cortex-M55) with D-Cache coherency via RX-before-TX
+/**
+ * @file servo.cpp
+ * @brief Non-blocking async servo driver and protocol implementation.
+ * @author Leon Angele
+ * @date 2026-05-08
+ *
+ * Provides `Stm32UartDmaPort`, `PollUartPort` and `ServoBus` classes
+ * implementing an RX-before-TX protocol for STS3215 servos.
  */
 
 #include "hand/servo.hpp"

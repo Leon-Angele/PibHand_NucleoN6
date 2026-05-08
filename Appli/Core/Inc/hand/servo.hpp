@@ -1,13 +1,11 @@
-/*
- * servo.hpp
- * Non-blocking asynchronous servo driver for STS3215 servos
- * Architecture: 3-Layer system with strict non-blocking design + RX-before-TX for D-Cache coherency
- * 
- * Layer 1: Hardware Abstraction (Stm32UartDmaPort) - DMA operations, no blocking
- * Layer 2: Protocol Layer (ServoBus) - Async state machine with RX-before-TX
- * 
- * STM32N6 (Cortex-M55) with active D-Cache
- * C++17, no dynamic allocation
+/**
+ * @file servo.hpp
+ * @brief Non-blocking asynchronous servo driver for STS3215 servos.
+ * @author Leon Angele
+ * @date 2026-05-08
+ *
+ * Architecture: 3-Layer system with strict non-blocking design + RX-before-TX
+ * for D-Cache coherency on Cortex-M55.
  */
 #ifndef SERVO_HPP
 #define SERVO_HPP
