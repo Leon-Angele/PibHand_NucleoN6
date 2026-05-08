@@ -60,9 +60,10 @@
 
  ### HandController-Logik
  - **Taktung:** Läuft mit 100 Hz (je 10 ms Zyklus).
- - **setTargetGrip:** Setzt Zielgriff sofort und startet eine sanfte Trajektorie zum Ziel (Dauer in ms wird übernommen).
- - **Interpolation:** Zwischenpositionen werden via Smoothstep (S‑Kurve) berechnet für gleichmäßige Bewegung.
- - **SyncWrite:** Positionsbefehle werden mit `syncWritePositions` an alle Finger gesendet (non-blocking).
+ - **setTargetGrip:** Setzt Zielgriff sofort und startet eine sanfte Trajektorie zum Ziel. Jeder Finger bewegt sich mit seiner individuellen Geschwindigkeit aus `AxisSettings` (in Grad/Sekunde, wobei 0-4095 Servo-Einheiten = 360°).
+ - **Geschwindigkeitssteuerung:** Config-basiert (`maxSpeed` in °/s), jeder Finger berechnet seine Fahrtzeit automatisch: `duration = (Δ Position × 1000) / (maxSpeed × 4095/360)`. Finger kommen asynchron an.
+ - **Interpolation:** Zwischenpositionen werden via Smoothstep (S‑Kurve) berechnet für gleichmäßige Bewegung mit sanftem Anfahren/Abbremsen.
+ - **SyncWrite:** Positionsbefehle werden mit `syncWritePositions` an alle Finger gesendet (non-blocking), servo `time` Parameter konstant bei 10 ms für smoothe Ausführung.
  - **Telemetrie (Round‑Robin):** Bus wird mit `bus.poll()` getaktet; `startReadCurrent` initiiert RX-before-TX; bei `DATA_READY` wird das Ergebnis verarbeitet und zum nächsten Finger weitergerückt.
  - **Predict-Hook:** `predictGraspAdjustment` dient als Hook für zukünftige AI‑Anpassungen (Slip/Force).
  - **Scope:** Aktuell wird nur die rechte Hand regelmäßig upgedatet (`leftHand.update()` auskommentiert).
