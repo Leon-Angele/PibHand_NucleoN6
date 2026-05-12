@@ -331,17 +331,21 @@ bool ServoBus::startReadCurrent(uint8_t id)
  * @return true if read started successfully
  */
 
-std::optional<int16_t> ServoBus::getReadResult()
+std::optional<int32_t> ServoBus::getReadResult()
 {
     if (state_ != BusState::DATA_READY) {
         return std::nullopt;
     }
-    
-    // Extract data from response packet: 0xFF 0xFF ID Len Error [Data_L Data_H] Checksum
-    // Data is at offset 5 (little-endian)
-    int16_t value = static_cast<int16_t>(rx_buf_[5] | (rx_buf_[6] << 8));
-    
-    return value;
+
+    // Extract raw data from response packet: 0xFF 0xFF ID Len Error [Data_L Data_H] Checksum
+    // Data is little-endian at offset 5
+    int16_t raw = static_cast<int16_t>(rx_buf_[5] | (rx_buf_[6] << 8));
+
+    // Datasheet: 1 unit = 6.5 mA -> multiply by 6.5
+    // Avoid floats: 6.5 = 13/2 => mA = raw * 13 / 2
+    int32_t mA = (static_cast<int32_t>(raw) * 13) / 2;
+
+    return mA;
 }
 
 /**

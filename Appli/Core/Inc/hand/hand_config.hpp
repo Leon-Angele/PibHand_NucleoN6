@@ -102,12 +102,12 @@ struct GripConfig {
  *   - maxCurrent: maximum allowed current in mA
  */
 constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> AxisSettings = {{
-    {"Thumb Stretch", 0, 4095, 50, 1500},       
-    {"Index Stretch", 0, 4095, 50, 1500},       
-    {"Middle Stretch", 0, 4095, 50, 1500},      
-    {"Ring Stretch", 0, 4095, 50, 1500},        
-    {"Pinky Stretch", 0, 4095, 50, 1500},       
-    {"Thumb Opposition", 0, 4095, 50, 1500}     
+    {"Thumb Stretch", 0, 4095, 50, 200},       
+    {"Index Stretch", 0, 4095, 50, 200},       
+    {"Middle Stretch", 0, 4095, 50, 200},      
+    {"Ring Stretch", 0, 4095, 50, 200},        
+    {"Pinky Stretch", 0, 4095, 50, 200},       
+    {"Thumb Opposition", 0, 4095, 50, 200}     
 }};
 
 /**

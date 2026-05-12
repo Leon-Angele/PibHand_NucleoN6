@@ -10,11 +10,17 @@
 
 #include "hand/hand_controller.hpp"
 #include <cmath>
+// BSP LED control for Nucleo board
+#include "stm32n6xx_nucleo.h"
 
 namespace HandControl {
 
 // Microstep time (ms) used when controller drives micro-steps
 static constexpr uint16_t MICROSTEP_TIME = 10;
+// LED toggle interval when servos are moving (ms)
+static constexpr uint32_t LED_TOGGLE_MS = 100;
+// Last tick when we toggled the blue LED
+static uint32_t led_last_toggle_ms = 0;
 
 // ============================================================================
 // CONSTRUCTOR
@@ -148,6 +154,17 @@ void HandController::update()
     if (any_moving || (now % 500) == 0) {  // Send updates while moving, or every 500ms to maintain position
         bus_.syncWritePositions(servo_ids.data(), positions.data(), times.data(), FINGER_COUNT);
     }
+
+    // Blue LED heartbeat while any servo is moving: toggle every 100ms.
+    if (any_moving) {
+        if ((now - led_last_toggle_ms) >= LED_TOGGLE_MS) {
+            BSP_LED_Toggle(LED_BLUE);
+            led_last_toggle_ms = now;
+        }
+    } else {
+        // Ensure LED is off when idle
+        BSP_LED_Off(LED_BLUE);
+    }
     
     // ========================================================================
     // PART 2: ROUND-ROBIN TELEMETRY POLLING
@@ -177,24 +194,31 @@ void HandController::update()
             {
                 auto current_opt = bus_.getReadResult();
                 if (current_opt.has_value()) {
-                    int16_t current = current_opt.value();
+                    int32_t current = current_opt.value();
                     
-                    // Feed to AI placeholder (future closed-loop control)
-                    predictGraspAdjustment(poll_finger_idx_, current);
+                    // Check over-current here (call handler from update loop)
+                    uint16_t limit = AxisSettings[poll_finger_idx_].maxCurrent;
+                    if (current > static_cast<int32_t>(limit)) {
+                        HAND_DEBUG("Overcurrent detected on finger %d: %d mA > %d mA", poll_finger_idx_, current, limit);
+                        handleOverCurrent(poll_finger_idx_, static_cast<int16_t>(current));
+                    } else {
+                        // Feed to AI placeholder (future closed-loop control)
+                        predictGraspAdjustment(poll_finger_idx_, static_cast<int16_t>(current));
+                    }
                     
                   
                     #if DEBUG_PRINTS
-                    /*
+                    
                     static int16_t currents[6] = {0};
                     currents[poll_finger_idx_] = current;
                     static uint32_t last_log_ms = 0;
-                    if ((now - last_log_ms) > 1000) {  
+                    if ((now - last_log_ms) > 100) {  
                         HAND_DEBUG("Ströme: [0]:%d [1]:%d [2]:%d [3]:%d [4]:%d [5]:%d mA", 
                                 currents[0], currents[1], currents[2], 
                                 currents[3], currents[4], currents[5]);
                         last_log_ms = now;
                     }
-                        */
+                        
                     #endif
                 }
                 
@@ -291,24 +315,33 @@ uint16_t HandController::interpolatePosition(size_t finger_idx, uint32_t now)
 void HandController::predictGraspAdjustment(uint8_t finger_idx, int16_t current)
 {
     // Placeholder for future AI-based closed-loop control (X-CUBE-AI)
-    // 
-    // This function will analyze servo current to detect:
-    // - Object contact (current spike)
-    // - Slip detection (oscillating current)
-    // - Grip force optimization
-    // 
-    // Based on sensor fusion (current + position + speed), the AI model
-    // will output trajectory adjustments to improve grasp stability.
-    
-    (void)finger_idx;  // Suppress unused warning
+    // Currently this does not perform any protective actions; over-current
+    // is handled directly in `update()` to keep safety checks local to
+    // the telemetry handling path.
+    (void)finger_idx;
     (void)current;
-    
-    // Example future implementation:
-    // if (current > AxisSettings[finger_idx].maxCurrent * 0.8f) {
-    //     HAND_DEBUG("High current on finger %d - possible contact", finger_idx);
-    //     // Reduce target position to prevent damage
-    //     // target_pos_[finger_idx] = current_pos_[finger_idx];
-    // }
+}
+
+void HandController::handleOverCurrent(uint8_t finger_idx, int16_t measured_current)
+{
+    if (finger_idx >= FINGER_COUNT) return;
+
+    // Stop internal movement state for the finger
+    moving_[finger_idx] = false;
+    target_pos_[finger_idx] = current_pos_[finger_idx];
+
+    // Immediately command the servo to hold current position
+    uint8_t id = Hand::getServoID(side_, static_cast<Finger>(finger_idx));
+    uint8_t ids[1] = { id };
+    uint16_t pos[1] = { current_pos_[finger_idx] };
+    // Use MICROSTEP_TIME for a short hold command
+    uint16_t times[1] = { MICROSTEP_TIME };
+
+    // Fire-and-forget sync write to enforce hold
+    bus_.syncWritePositions(ids, pos, times, 1);
+
+    // Optional: log the action (already done above)
+    (void)measured_current;
 }
 
 /**

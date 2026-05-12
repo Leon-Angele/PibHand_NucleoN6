@@ -196,7 +196,7 @@ public:
      * @brief Get result of async read (call after poll() sets state to DATA_READY)
      * @return Current value in mA, or std::nullopt if not ready
      */
-    std::optional<int16_t> getReadResult();
+    std::optional<int32_t> getReadResult();
 
 private:
     ISerialPort& port_;

@@ -102,6 +102,16 @@ private:
      * @param current Measured current in mA
      */
     void predictGraspAdjustment(uint8_t finger_idx, int16_t current);
+
+    /**
+     * @brief Handle an over-current event for a finger by stopping its motor.
+     * @param finger_idx Finger index that triggered the over-current
+     * @param measured_current Measured current in mA
+     *
+     * This will immediately stop movement of the specific finger and
+     * send a position hold command to the servo to prevent further motion.
+     */
+    void handleOverCurrent(uint8_t finger_idx, int16_t measured_current);
 };
 
 } // namespace HandControl
