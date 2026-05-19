@@ -18,7 +18,7 @@
 
 // Debug print macro: toggle via DEBUG_PRINTS (0 = off, 1 = on)
 #ifndef DEBUG_PRINTS
-#define DEBUG_PRINTS 1
+#define DEBUG_PRINTS 0
 #endif
 
 #if DEBUG_PRINTS
@@ -69,13 +69,14 @@ enum class GripType : uint8_t {
 
 /**
  * @brief Physische Limits und Parameter eines einzelnen Motors
- * @note Alle Positionen/Offsets sind in nativen SmartServo-Einheiten (0..4095).
- *       Servo-Range: 0-4095 entspricht 360° (voller Kreis)
+ * @note Alle Positionen sind in nativen SmartServo-Einheiten (0..4095).
+ *       zeroPos: Ruhestellung (meist 2047)
+ *       maxPos: Maximal ausgefahrene Position (Richtung wird automatisch erkannt)
  */
 struct FingerConfig {
     std::string_view name;
-    uint16_t minPos;      // 0 in Servo-Einheiten
-    uint16_t maxPos;      // Max (4095) in Servo-Einheiten
+    uint16_t zeroPos;     // Neutral/rest position (Ruhestellung, meist 2047)
+    uint16_t maxPos;      // Maximum extended position (kann < oder > zeroPos sein)
     uint16_t maxSpeed;    // in Grad/s (0-4095 = 360°)
     uint16_t maxCurrent;  // in mA
 };
@@ -90,24 +91,65 @@ struct GripConfig {
 };
 
 /**
- * @brief Globale Achsen-Konfiguration (identisch für links und rechts)
- *
- * Each entry is a `FingerConfig` initialized as:
- *   { "<name>", <minPos>, <maxPos>, <maxSpeed>, <maxCurrent> }
- * where:
- *   - name: human-readable axis name
- *   - minPos: minimum servo position (native units, 0)
- *   - maxPos: maximum servo position (native units, 4095)
- *   - maxSpeed: maximum speed in degrees per second (0-4095 = 360°)
- *   - maxCurrent: maximum allowed current in mA
+ * @brief Servo-IDs für die LINKE Hand
+ * 
+ * Reihenfolge: Thumb, Index, Middle, Ring, Pinky, ThumbRotation
+ * Hier eintragen: Deine tatsächlichen Hardware-IDs
  */
-constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> AxisSettings = {{
-    {"Thumb Stretch", 0, 4095, 50, 200},       
-    {"Index Stretch", 0, 4095, 50, 200},       
-    {"Middle Stretch", 0, 4095, 50, 200},      
-    {"Ring Stretch", 0, 4095, 50, 200},        
-    {"Pinky Stretch", 0, 4095, 50, 200},       
-    {"Thumb Opposition", 0, 4095, 50, 200}     
+constexpr std::array<uint8_t, static_cast<size_t>(Finger::Count)> LeftHandIDs = {{
+    31,  // Thumb
+    32,  // Index
+    33,  // Middle
+    34,  // Ring
+    35,  // Pinky
+    30   // ThumbRotation
+}};
+
+/**
+ * @brief Servo-IDs für die RECHTE Hand
+ * 
+ * Reihenfolge: Thumb, Index, Middle, Ring, Pinky, ThumbRotation
+ * TODO: Hier die IDs für die rechte Hand eintragen
+ */
+constexpr std::array<uint8_t, static_cast<size_t>(Finger::Count)> RightHandIDs = {{
+    1,  // Thumb (TODO: anpassen)
+    2,  // Index (TODO: anpassen)
+    3,  // Middle (TODO: anpassen)
+    4,  // Ring (TODO: anpassen)
+    5,  // Pinky (TODO: anpassen)
+    6   // ThumbRotation (TODO: anpassen)
+}};
+
+/**
+ * @brief Achsen-Konfiguration für LINKE Hand
+ *
+ * Each entry: { "<name>", <zeroPos>, <maxPos>, <maxSpeed>, <maxCurrent> }
+ * - zeroPos: Ruhestellung (offen), meist 2047
+ * - maxPos: Geschlossene Position (kann < oder > zeroPos sein)
+ * - maxSpeed: Maximale Geschwindigkeit in Grad/s
+ * - maxCurrent: Maximaler Strom in mA
+ */
+constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> LeftAxisSettings = {{
+    {"Thumb Stretch", 2047, 0, 250, 200},           // ID 31: bewegt sich von 2047 → 0
+    {"Index Stretch", 2047, 4096, 250, 200},        // ID 32: bewegt sich von 2047 → 4096
+    {"Middle Stretch", 2047, 0, 250, 200},          // ID 33: bewegt sich von 2047 → 0
+    {"Ring Stretch", 2047, 4096, 250, 200},         // ID 34: bewegt sich von 2047 → 4096
+    {"Pinky Stretch", 2047, 4096, 250, 200},        // ID 35: bewegt sich von 2047 → 4096
+    {"Thumb Opposition", 2047, 500, 250, 200}       // ID 30: bewegt sich von 2047 → 500
+}};
+
+/**
+ * @brief Achsen-Konfiguration für RECHTE Hand
+ * 
+ * TODO: Hier die Werte für die rechte Hand anpassen (spiegeln oder separat konfigurieren)
+ */
+constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> RightAxisSettings = {{
+    {"Thumb Stretch", 2047, 0, 50, 200},       
+    {"Index Stretch", 2047, 4096, 50, 200},       
+    {"Middle Stretch", 2047, 0, 50, 200},      
+    {"Ring Stretch", 2047, 4096, 50, 200},        
+    {"Pinky Stretch", 2047, 4096, 50, 200},       
+    {"Thumb Opposition", 2047, 500, 50, 200}     
 }};
 
 /**
@@ -115,7 +157,7 @@ constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> AxisSetti
  */
 constexpr std::array<GripConfig, static_cast<size_t>(GripType::Count)> GripDatabase = {{
     {GripType::Open, "OPEN", {0, 0, 0, 0, 0, 0}},
-    {GripType::Spitzgriff, "SPITZGRIFF", {4095, 4095, 4095, 4095, 4095, 4095}},
+    {GripType::Spitzgriff, "ZEIGEN", {4095, 0, 4095, 4095, 4095, 2047}},
     {GripType::Dreipunktgriff, "DREIPUNKTGRIFF", {3185, 3185, 3185, 0, 0, 2047}},
     {GripType::Schluesselgriff, "SCHLUESSELGRIFF", {2730, 1365, 0, 0, 0, 2730}},
     {GripType::Zylindergriff, "ZYLINDERGRIFF", {3640, 3640, 3640, 3640, 3640, 1365}},
@@ -125,30 +167,62 @@ constexpr std::array<GripConfig, static_cast<size_t>(GripType::Count)> GripDatab
 }};
 
 /**
- * @brief Hilfsklasse zur ID-Auflösung
+ * @brief Hilfsklasse zur ID-Auflösung und Positions-Mapping
  */
 class Hand {
 public:
     enum class Side { Left, Right };
 
     /**
-     * @brief Berechnet die Servo-ID basierend auf Handseite und Finger
-     * Rechte Hand: 1..6, Linke Hand: 7..12
+     * @brief Holt die Servo-ID für einen bestimmten Finger
+     * @param side Handseite (Left/Right)
+     * @param finger Finger-Index
+     * @return Hardware-Servo-ID aus den konfigurierten ID-Arrays
      */
     static constexpr uint8_t getServoID(Side side, Finger finger) {
-        uint8_t baseID = (side == Side::Right) ? 1 : 7;
-        return baseID + static_cast<uint8_t>(finger);
+        const auto& ids = (side == Side::Left) ? LeftHandIDs : RightHandIDs;
+        return ids[static_cast<size_t>(finger)];
+    }
+    
+    /**
+     * @brief Holt die Achsen-Konfiguration für einen Finger
+     * @param side Handseite (Left/Right)
+     * @param finger Finger-Index
+     * @return Referenz auf FingerConfig
+     */
+    static constexpr const FingerConfig& getAxisConfig(Side side, Finger finger) {
+        const auto& settings = (side == Side::Left) ? LeftAxisSettings : RightAxisSettings;
+        return settings[static_cast<size_t>(finger)];
     }
 
     /**
-     * @brief Konvertiert Eingabewert in Servo-Position.
+     * @brief Konvertiert logische Position in physische Servo-Position
      *
-     * Nach der Umstellung werden die Griffwerte direkt in nativen
-     * Servo-Einheiten (0..4095) gespeichert, daher ist diese Funktion
-     * aktuell identisch zur Identität und gibt den Wert unverändert zurück.
+     * Logische Position: 0 = offen (Ruhestellung), 4095 = geschlossen (maximal)
+     * Physische Position: berücksichtigt zeroPos und Drehrichtung automatisch
+     *
+     * Formel: servo = zeroPos + (logicalPos * (maxPos - zeroPos) / 4095)
+     * Funktioniert für beide Drehrichtungen (positive und negative Delta)
+     *
+     * @param side Handseite
+     * @param finger Finger-Index
+     * @param logicalPos Logische Position (0..4095, 0=offen)
+     * @return Physische Servo-Position (0..4095)
      */
-    static constexpr uint16_t mapToServoPos(uint16_t servoPos) {
-        return servoPos;
+    static constexpr uint16_t mapToServoPos(Side side, Finger finger, uint16_t logicalPos) {
+        const auto& cfg = getAxisConfig(side, finger);
+        
+        // Lineare Interpolation von zeroPos zu maxPos
+        // Funktioniert für beide Richtungen (positiv und negativ)
+        int32_t delta = static_cast<int32_t>(cfg.maxPos) - static_cast<int32_t>(cfg.zeroPos);
+        int32_t offset = (static_cast<int32_t>(logicalPos) * delta) / 4095;
+        int32_t servoPos = static_cast<int32_t>(cfg.zeroPos) + offset;
+        
+        // Clamp auf gültigen Bereich [0, 4095]
+        if (servoPos < 0) servoPos = 0;
+        if (servoPos > 4095) servoPos = 4095;
+        
+        return static_cast<uint16_t>(servoPos);
     }
 };
 

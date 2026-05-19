@@ -77,7 +77,7 @@ void HandController::setTargetGrip(GripType grip)
                          ? (target_pos_[i] - start_pos_[i]) 
                          : (start_pos_[i] - target_pos_[i]);
         
-        uint16_t max_speed_deg_per_sec = AxisSettings[i].maxSpeed;  // degrees per second
+        uint16_t max_speed_deg_per_sec = Hand::getAxisConfig(side_, static_cast<Finger>(i)).maxSpeed;  // degrees per second
         
         // Handle edge cases
         if (delta == 0) {
@@ -145,7 +145,9 @@ void HandController::update()
             }
         }
         
-        positions[i] = current_pos_[i];
+        // Map logical position (0=open, 4095=closed) to physical servo position
+        // This accounts for different zero positions and rotation directions
+        positions[i] = Hand::mapToServoPos(side_, static_cast<Finger>(i), current_pos_[i]);
         // Use microstep time for smooth servo execution
         times[i] = MICROSTEP_TIME;
     }
@@ -197,7 +199,7 @@ void HandController::update()
                     int32_t current = current_opt.value();
                     
                     // Check over-current here (call handler from update loop)
-                    uint16_t limit = AxisSettings[poll_finger_idx_].maxCurrent;
+                    uint16_t limit = Hand::getAxisConfig(side_, static_cast<Finger>(poll_finger_idx_)).maxCurrent;
                     if (current > static_cast<int32_t>(limit)) {
                         HAND_DEBUG("Overcurrent detected on finger %d: %d mA > %d mA", poll_finger_idx_, current, limit);
                         handleOverCurrent(poll_finger_idx_, static_cast<int16_t>(current));
@@ -236,8 +238,10 @@ void HandController::update()
                 static uint32_t last_timeout_log_ms = 0;
                 constexpr uint32_t TIMEOUT_LOG_INTERVAL_MS = 10000; // 10s
                 if ((now - last_timeout_log_ms) > TIMEOUT_LOG_INTERVAL_MS) {
+#if DEBUG_PRINTS
                     uint8_t servo_id = Hand::getServoID(side_, static_cast<Finger>(poll_finger_idx_));
                     HAND_DEBUG("Read timeout for servo %d (finger %d)", servo_id, poll_finger_idx_);
+#endif
                     last_timeout_log_ms = now;
                 }
                 
@@ -333,7 +337,8 @@ void HandController::handleOverCurrent(uint8_t finger_idx, int16_t measured_curr
     // Immediately command the servo to hold current position
     uint8_t id = Hand::getServoID(side_, static_cast<Finger>(finger_idx));
     uint8_t ids[1] = { id };
-    uint16_t pos[1] = { current_pos_[finger_idx] };
+    // Map logical position to physical servo position
+    uint16_t pos[1] = { Hand::mapToServoPos(side_, static_cast<Finger>(finger_idx), current_pos_[finger_idx]) };
     // Use MICROSTEP_TIME for a short hold command
     uint16_t times[1] = { MICROSTEP_TIME };
 

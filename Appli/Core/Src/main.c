@@ -129,6 +129,7 @@ int main(void)
   BSP_LED_Init(LED_GREEN);
   printf("Init start\r\n");
   hand_bridge_init();
+  hand_bridge_ping_all_servos();
 
   // Start VCP RX DMA in circular mode for continuous reception
   HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);

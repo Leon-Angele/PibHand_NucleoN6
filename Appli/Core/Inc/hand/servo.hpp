@@ -197,6 +197,20 @@ public:
      * @return Current value in mA, or std::nullopt if not ready
      */
     std::optional<int32_t> getReadResult();
+    
+    // ===== BLOCKING PING (Init/Discovery only) =====
+    
+    /**
+     * @brief Blocking PING command to test servo connectivity (for init only)
+     * 
+     * Sends a PING instruction and waits for response. This is a blocking
+     * operation intended ONLY for initialization/discovery, not for runtime.
+     * 
+     * @param id Servo ID to ping
+     * @param timeout_ms Timeout in milliseconds (default 50ms)
+     * @return true if servo responded, false on timeout or error
+     */
+    bool pingServo(uint8_t id, uint32_t timeout_ms = 50);
 
 private:
     ISerialPort& port_;
@@ -224,6 +238,7 @@ private:
     size_t buildWritePacket(uint8_t id, uint8_t reg, const uint8_t* data, uint8_t len, uint8_t* out_buf);
     size_t buildSyncWritePacket(const uint8_t* ids, const uint16_t* positions, 
                                 const uint16_t* times_ms, size_t count, uint8_t* out_buf);
+    size_t buildPingPacket(uint8_t id, uint8_t* out_buf);
 };
 
 } // namespace HandControl

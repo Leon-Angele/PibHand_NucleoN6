@@ -14,6 +14,7 @@
 #include "hand/servo.hpp"
 #include "hand/hand_controller.hpp"
 #include "hand/serial_commander.hpp"
+#include <cstdio>
 #include "main.h"
 
 #include <cstdint>
@@ -122,7 +123,7 @@ bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip) {
  */
 void hand_bridge_update(void) {
     rightHand.update();
-    // leftHand.update();
+    leftHand.update();
 }
 
 /**
@@ -170,6 +171,38 @@ void bridge_on_uart_tx(void* huart) {
  */
 void bridge_on_uart_rx(void* huart) {
     Stm32UartDmaPort::onRxComplete(static_cast<UART_HandleTypeDef*>(huart));
+}
+
+/**
+ * @brief Ping all configured servos and print availability to VCP.
+ * 
+ * Tests connectivity to all servos in LeftHandIDs and RightHandIDs.
+ * Outputs results via printf (VCP). Intended for startup diagnostics only.
+ */
+void hand_bridge_ping_all_servos(void) {
+    printf("\r\n[BRIDGE] Pinging all servos...\r\n");
+    
+    // Test left hand servos
+    printf("[BRIDGE] Left Hand:\r\n");
+    for (size_t i = 0; i < static_cast<size_t>(Finger::Count); ++i) {
+        uint8_t id = LeftHandIDs[i];
+        bool online = servoBus.pingServo(id, 100);
+        const char* status = online ? "OK" : "TIMEOUT";
+        printf("  [%d] %s (ID %d): %s\r\n", i, LeftAxisSettings[i].name.data(), id, status);
+        HAL_Delay(20);  // Delay between pings for bus stability
+    }
+    
+    // Test right hand servos
+    printf("[BRIDGE] Right Hand:\r\n");
+    for (size_t i = 0; i < static_cast<size_t>(Finger::Count); ++i) {
+        uint8_t id = RightHandIDs[i];
+        bool online = servoBus.pingServo(id, 100);
+        const char* status = online ? "OK" : "TIMEOUT";
+        printf("  [%d] %s (ID %d): %s\r\n", i, RightAxisSettings[i].name.data(), id, status);
+        HAL_Delay(20);  // Delay between pings for bus stability
+    }
+    
+    printf("[BRIDGE] Ping complete.\r\n\r\n");
 }
 
 } // extern "C"

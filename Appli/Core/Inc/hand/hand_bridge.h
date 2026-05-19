@@ -34,6 +34,9 @@ bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip);
 /* Called from main loop to update both hands (100Hz) */
 void hand_bridge_update(void) ;
 
+/* Ping all configured servos and print availability to VCP */
+void hand_bridge_ping_all_servos(void);
+
 /* Commander helpers */
 bool commander_bridge_feed_byte(uint8_t b) ;
 void commander_bridge_process(void) ;

@@ -506,4 +506,86 @@ size_t ServoBus::buildSyncWritePacket(const uint8_t* ids, const uint16_t* positi
  * @brief Build a SyncWrite broadcast packet for multiple servos.
  */
 
+bool ServoBus::pingServo(uint8_t id, uint32_t timeout_ms)
+{
+    // Reset bus state if not idle (safety for init-time use)
+    if (state_ != BusState::IDLE) {
+        HAND_DEBUG("Ping: Bus not idle, resetting state");
+        state_ = BusState::IDLE;
+        HAL_Delay(10);  // Short delay to ensure bus is settled
+    }
+    
+    // Expected PING response: 0xFF 0xFF ID Len Error Checksum (6 bytes)
+    const uint16_t expected_rx_len = 6;
+    
+    // Use existing non-cacheable buffers (tx_buf_ and rx_buf_)
+    // Build PING packet directly into tx_buf_
+    size_t tx_len = buildPingPacket(id, tx_buf_);
+    if (tx_len == 0) return false;
+    
+    // D-Cache clean for TX buffer (already in non-cacheable section, but be safe)
+    SCB_CleanDCache_by_Addr((uint32_t*)tx_buf_, tx_len);
+    
+    // D-Cache invalidate for RX buffer BEFORE starting DMA
+    SCB_InvalidateDCache_by_Addr((uint32_t*)rx_buf_, expected_rx_len);
+    
+    // Start RX DMA (listening for response)
+    if (!port_.receiveDMA(rx_buf_, expected_rx_len)) {
+        HAND_DEBUG("Ping: RX DMA start failed for ID %d", id);
+        return false;
+    }
+    
+    // Start TX DMA (send PING command)
+    if (!port_.transmitDMA(tx_buf_, tx_len)) {
+        HAND_DEBUG("Ping: TX DMA start failed for ID %d", id);
+        port_.abortRx();
+        return false;
+    }
+    
+    // Blocking wait for response with timeout
+    uint32_t start = HAL_GetTick();
+    while (!port_.isRxDone()) {
+        if ((HAL_GetTick() - start) > timeout_ms) {
+            port_.abortRx();
+            HAND_DEBUG("Ping: Timeout for ID %d", id);
+            return false;  // Timeout
+        }
+        HAL_Delay(1);  // Short delay to prevent busy-waiting
+    }
+    
+    // D-Cache invalidate AFTER RX complete to ensure fresh data
+    SCB_InvalidateDCache_by_Addr((uint32_t*)rx_buf_, expected_rx_len);
+    
+    // Validate response (PING response has 0 data bytes)
+    bool valid = validateResponse(id, 0);
+    
+    // Small delay before returning to allow bus to settle
+    HAL_Delay(5);
+    
+    return valid;
+}
+
+/**
+ * @brief Blocking PING command to test servo connectivity (for init only).
+ */
+
+size_t ServoBus::buildPingPacket(uint8_t id, uint8_t* out_buf)
+{
+    // PING packet format: 0xFF 0xFF ID Length Instruction Checksum
+    // Length = 2 (Instruction + Checksum)
+    
+    out_buf[0] = 0xFF;
+    out_buf[1] = 0xFF;
+    out_buf[2] = id;
+    out_buf[3] = 2;  // Length = Instruction + Checksum
+    out_buf[4] = static_cast<uint8_t>(Instruction::Ping);
+    out_buf[5] = calcChecksum(&out_buf[2], 3);  // ID + Length + Instruction
+    
+    return 6;
+}
+
+/**
+ * @brief Build a PING instruction packet.
+ */
+
 } // namespace HandControl
