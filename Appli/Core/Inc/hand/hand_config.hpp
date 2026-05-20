@@ -130,12 +130,12 @@ constexpr std::array<uint8_t, static_cast<size_t>(Finger::Count)> RightHandIDs =
  * - maxCurrent: Maximaler Strom in mA
  */
 constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> LeftAxisSettings = {{
-    {"Thumb Stretch", 2047, 0, 250, 200},           // ID 31: bewegt sich von 2047 → 0
-    {"Index Stretch", 2047, 4096, 250, 200},        // ID 32: bewegt sich von 2047 → 4096
-    {"Middle Stretch", 2047, 0, 250, 200},          // ID 33: bewegt sich von 2047 → 0
-    {"Ring Stretch", 2047, 4096, 250, 200},         // ID 34: bewegt sich von 2047 → 4096
-    {"Pinky Stretch", 2047, 4096, 250, 200},        // ID 35: bewegt sich von 2047 → 4096
-    {"Thumb Opposition", 2047, 500, 250, 200}       // ID 30: bewegt sich von 2047 → 500
+    {"Thumb Stretch", 2047, 0, 200, 200},           // ID 31: bewegt sich von 2047 → 0
+    {"Index Stretch", 2047, 4096, 200, 200},        // ID 32: bewegt sich von 2047 → 4096
+    {"Middle Stretch", 2047, 0, 200, 200},          // ID 33: bewegt sich von 2047 → 0
+    {"Ring Stretch", 2047, 4096, 200, 200},         // ID 34: bewegt sich von 2047 → 4096
+    {"Pinky Stretch", 2047, 4096, 200, 200},        // ID 35: bewegt sich von 2047 → 4096
+    {"Thumb Opposition", 2047, 500, 200, 200}       // ID 30: bewegt sich von 2047 → 500
 }};
 
 /**
@@ -144,12 +144,12 @@ constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> LeftAxisS
  * TODO: Hier die Werte für die rechte Hand anpassen (spiegeln oder separat konfigurieren)
  */
 constexpr std::array<FingerConfig, static_cast<size_t>(Finger::Count)> RightAxisSettings = {{
-    {"Thumb Stretch", 2047, 0, 50, 200},       
-    {"Index Stretch", 2047, 4096, 50, 200},       
-    {"Middle Stretch", 2047, 0, 50, 200},      
-    {"Ring Stretch", 2047, 4096, 50, 200},        
-    {"Pinky Stretch", 2047, 4096, 50, 200},       
-    {"Thumb Opposition", 2047, 500, 50, 200}     
+    {"Thumb Stretch", 2047, 0, 200, 200},       
+    {"Index Stretch", 2047, 4096, 200, 200},       
+    {"Middle Stretch", 2047, 0, 200, 200},      
+    {"Ring Stretch", 2047, 4096, 200, 200},        
+    {"Pinky Stretch", 2047, 4096, 200, 200},       
+    {"Thumb Opposition", 2047, 500, 200, 200}     
 }};
 
 /**

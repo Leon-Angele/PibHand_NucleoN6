@@ -103,6 +103,79 @@ void HandController::setTargetGrip(GripType grip)
                grip_cfg.name.data(), static_cast<int>(side_));
 }
 
+void HandController::setTargetGripWithPercent(GripType grip, const uint16_t* perFingerPercent)
+{
+    if (static_cast<size_t>(grip) >= static_cast<size_t>(GripType::Count)) {
+        HAND_DEBUG("Invalid grip type: %d", static_cast<int>(grip));
+        return;
+    }
+    const GripConfig& grip_cfg = GripDatabase[static_cast<size_t>(grip)];
+
+    uint32_t now = HAL_GetTick();
+
+    for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        start_pos_[i] = current_pos_[i];
+        target_pos_[i] = grip_cfg.positions[i];
+        start_time_ms_[i] = now;
+
+        uint16_t delta = (target_pos_[i] > start_pos_[i]) ? (target_pos_[i] - start_pos_[i]) : (start_pos_[i] - target_pos_[i]);
+
+        uint16_t pct = (perFingerPercent) ? perFingerPercent[i] : 100;
+        uint16_t axis_max_deg_s = Hand::getAxisConfig(side_, static_cast<Finger>(i)).maxSpeed;
+        uint32_t use_deg_s = (axis_max_deg_s == 0) ? 1000 : ((static_cast<uint32_t>(axis_max_deg_s) * pct) / 100);
+
+        uint32_t max_speed_units_per_sec = (use_deg_s * 4095) / 360;
+        if (delta == 0) { duration_ms_[i] = 0; moving_[i] = false; }
+        else if (max_speed_units_per_sec == 0) { duration_ms_[i] = (delta * 1000) / 1000; moving_[i] = true; }
+        else { duration_ms_[i] = (static_cast<uint32_t>(delta) * 1000) / max_speed_units_per_sec; moving_[i] = true; }
+    }
+
+    HAND_DEBUG("Grip set with per-finger percent: %s (side=%d)", grip_cfg.name.data(), static_cast<int>(side_));
+}
+
+void HandController::setSingleFingerPosition(Finger finger, uint16_t position, uint16_t speed_deg_per_s)
+{
+    size_t i = static_cast<size_t>(finger);
+    if (i >= FINGER_COUNT) return;
+    uint32_t now = HAL_GetTick();
+    start_pos_[i] = current_pos_[i];
+    target_pos_[i] = position;
+    start_time_ms_[i] = now;
+
+    uint16_t delta = (target_pos_[i] > start_pos_[i]) ? (target_pos_[i] - start_pos_[i]) : (start_pos_[i] - target_pos_[i]);
+    uint32_t use_deg_s = speed_deg_per_s;
+    if (use_deg_s == 0) use_deg_s = Hand::getAxisConfig(side_, finger).maxSpeed;
+    if (use_deg_s == 0) use_deg_s = 1000;
+    uint32_t max_speed_units_per_sec = (use_deg_s * 4095) / 360;
+    if (delta == 0) { duration_ms_[i] = 0; moving_[i] = false; }
+    else { duration_ms_[i] = (static_cast<uint32_t>(delta) * 1000) / max_speed_units_per_sec; moving_[i] = true; }
+}
+
+void HandController::stopImmediate()
+{
+    // Stop all movements immediately
+    for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        moving_[i] = false;
+        target_pos_[i] = current_pos_[i];
+    }
+    // Command servos to hold current positions
+    std::array<uint8_t, FINGER_COUNT> ids{};
+    std::array<uint16_t, FINGER_COUNT> positions{};
+    std::array<uint16_t, FINGER_COUNT> times{};
+    for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        ids[i] = Hand::getServoID(side_, static_cast<Finger>(i));
+        positions[i] = Hand::mapToServoPos(side_, static_cast<Finger>(i), current_pos_[i]);
+        times[i] = MICROSTEP_TIME;
+    }
+    bus_.syncWritePositions(ids.data(), positions.data(), times.data(), FINGER_COUNT);
+}
+
+void HandController::holdCurrent()
+{
+    // Similar to stopImmediate but keep motors in hold (no state change beyond stopping)
+    stopImmediate();
+}
+
 /**
  * @brief Schedule a target grip for this hand.
  *

@@ -39,13 +39,50 @@ static HandController leftHand(Hand::Side::Left, servoBus);
 // Default executor: calls C++ controllers directly
 class DefaultGripExecutor : public ICommandExecutor {
 public:
-    bool executeGrip(Hand::Side side, GripType grip) override {
-        if (side == Hand::Side::Right) {
-            rightHand.setTargetGrip(grip);
-        } else {
-            leftHand.setTargetGrip(grip);
+    bool executeCommand(const ICommandExecutor::Command& cmd) override {
+        switch (cmd.type) {
+            case ICommandExecutor::CommandType::GripDefault:
+                if (cmd.side == Hand::Side::Right) rightHand.setTargetGrip(cmd.grip);
+                else leftHand.setTargetGrip(cmd.grip);
+                return true;
+
+            case ICommandExecutor::CommandType::GripGlobalPct: {
+                // compute per-finger percents from global percent
+                std::array<uint16_t, static_cast<size_t>(Finger::Count)> arr{};
+                for (size_t i=0;i<arr.size();++i) arr[i] = cmd.percent;
+                if (cmd.side == Hand::Side::Right) rightHand.setTargetGripWithPercent(cmd.grip, arr.data());
+                else leftHand.setTargetGripWithPercent(cmd.grip, arr.data());
+                return true;
+            }
+
+            case ICommandExecutor::CommandType::GripPerFingerPct: {
+                if (cmd.side == Hand::Side::Right) rightHand.setTargetGripWithPercent(cmd.grip, cmd.perFingerPercent.data());
+                else leftHand.setTargetGripWithPercent(cmd.grip, cmd.perFingerPercent.data());
+                return true;
+            }
+            case ICommandExecutor::CommandType::SingleFinger:
+                if (cmd.side == Hand::Side::Right) rightHand.setSingleFingerPosition(cmd.finger, cmd.position, cmd.speed_deg_per_s);
+                else leftHand.setSingleFingerPosition(cmd.finger, cmd.position, cmd.speed_deg_per_s);
+                return true;
+            case ICommandExecutor::CommandType::Stop:
+                if (cmd.side == Hand::Side::Right) rightHand.stopImmediate(); else leftHand.stopImmediate();
+                return true;
+            case ICommandExecutor::CommandType::Hold:
+                if (cmd.side == Hand::Side::Right) rightHand.holdCurrent(); else leftHand.holdCurrent();
+                return true;
+            case ICommandExecutor::CommandType::GetStatus: {
+                // Print status to VCP
+                // Gather minimal status from controllers and bus
+                // Note: printf usage is OK for VCP
+                // Right hand
+                (void)printf("[STATUS] RightHand: (not detailed)\r\n");
+                (void)printf("[STATUS] LeftHand: (not detailed)\r\n");
+                return true;
+            }
+
+            default:
+                return false;
         }
-        return true;
     }
 };
 static DefaultGripExecutor defaultExecutor;
@@ -53,9 +90,13 @@ static DefaultGripExecutor defaultExecutor;
 // Adapter that forwards to C callback
 class CExecutorAdapter : public ICommandExecutor {
 public:
-    bool executeGrip(Hand::Side side, GripType grip) override {
+    bool executeCommand(const ICommandExecutor::Command& cmd) override {
         if (!c_executor_cb) return false;
-        return c_executor_cb(static_cast<uint8_t>(side), static_cast<uint8_t>(grip));
+        // Only support the simple legacy grip command via C callback
+        if (cmd.type == ICommandExecutor::CommandType::GripDefault) {
+            return c_executor_cb(static_cast<uint8_t>(cmd.side), static_cast<uint8_t>(cmd.grip));
+        }
+        return false;
     }
 };
 static CExecutorAdapter cExecutorAdapter;

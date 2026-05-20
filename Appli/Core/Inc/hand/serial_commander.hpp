@@ -49,8 +49,38 @@ private:
 class ICommandExecutor {
 public:
     virtual ~ICommandExecutor() = default;
-    // Execute a pre-defined Grip on given side. Return true on success.
-    virtual bool executeGrip(HandControl::Hand::Side side, HandControl::GripType grip) = 0;
+
+    // High-level command types parsed from ASCII input
+    enum class CommandType : uint8_t {
+        GripDefault,    // G:<Side>:<GripID>
+        GripGlobalPct,  // G:<Side>:<GripID>:V:<percent>
+        GripPerFingerPct, // G:<Side>:<GripID>:Vx:<v0>,...,<v5>
+        SingleFinger,   // F:<Side>:<Finger>:<Pos>[:<Speed>]
+        Stop,           // STOP:<Side>
+        Hold,           // HOLD:<Side>
+        GetStatus,      // GET:STATUS
+        Unknown
+    };
+
+    struct Command {
+        CommandType type = CommandType::Unknown;
+        HandControl::Hand::Side side = HandControl::Hand::Side::Left;
+        HandControl::GripType grip = HandControl::GripType::Open;
+
+        // For global percent
+        uint16_t percent = 100; // 0..100
+
+        // For per-finger percent (0..100)
+        std::array<uint16_t, static_cast<size_t>(HandControl::Finger::Count)> perFingerPercent{{0,0,0,0,0,0}};
+
+        // For single finger command
+        HandControl::Finger finger = HandControl::Finger::Thumb;
+        uint16_t position = 0; // 0..4095
+        uint16_t speed_deg_per_s = 0; // 0 means use axis maxSpeed
+    };
+
+    // Execute an abstracted command parsed from ASCII input. Return true on success.
+    virtual bool executeCommand(const Command& cmd) = 0;
 };
 
 class SerialCommander {
@@ -77,9 +107,8 @@ private:
 
     // Helpers (non-ISR)
     void sendResponse(const char* msg, size_t len) noexcept;
-    static bool parseGripCommand(const uint8_t* data, size_t len,
-                                 HandControl::Hand::Side& outSide,
-                                 uint8_t& outGripId) noexcept;
+    static bool parseCommand(const uint8_t* data, size_t len,
+                             ICommandExecutor::Command& outCmd) noexcept;
 };
 
 #endif // SERIAL_COMMANDER_HPP

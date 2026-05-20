@@ -71,3 +71,41 @@
  ## 🧠 Edge-AI Integration
 
  Dank der Cortex-M55 Architektur und der dedizierten NPU auf dem N6-Chip können komplexe Modelle zur Slip-Detection (Rutsch-Erkennung) oder taktilen Rückmeldung implementiert werden. Die Funktion `predictGraspAdjustment` im `HandController` dient als dedizierter Hook für X-CUBE-AI generierten Code.
+
+**Serial Commands**
+
+- **Command:** `G:<Side>:<GripID>`
+	- **Description:** Legacy-Aufruf zum Setzen eines vordefinierten Griffs. Nutzt die in `hand_config.hpp` konfigurierten `maxSpeed`-Werte.
+	- **Example:** `G:1:0` — Rechte Hand öffnen (OPEN)
+
+- **Command:** `G:<Side>:<GripID>:V:<percent>`
+	- **Description:** Gleicher Griff, aber alle Finger bewegen sich mit `percent` (0–100) relativ zur konfigurierten `maxSpeed`.
+	- **Example:** `G:0:2:V:50` — Linke Hand, Griff 2, 50% der Max-Geschwindigkeit
+
+- **Command:** `G:<Side>:<GripID>:Vx:<v0>,...,<v5>`
+	- **Description:** Per-Finger-Prozentwerte (je 0–100). Reihenfolge: Thumb, Index, Middle, Ring, Pinky, ThumbRotation.
+	- **Example:** `G:1:3:Vx:50,60,70,80,90,100`
+
+- **Command:** `F:<Side>:<Finger>:<Pos>[:<Speed>]`
+	- **Description:** Setzt einen einzelnen Finger (`Finger` Index 0..5) auf Position `Pos` (0..4095). Optionaler `Speed` in °/s; wenn weggelassen, wird `maxSpeed` aus `hand_config.hpp` verwendet.
+	- **Example:** `F:0:2:3000` — Linke Hand, Middle auf 3000 mit Standardgeschwindigkeit
+	- **Example:** `F:0:2:3000:120` — Linke Hand, Middle auf 3000 mit 120 °/s
+
+- **Command:** `STOP:<Side>` / `HOLD:<Side>`
+	- **Description:** `STOP` bricht alle laufenden Trajektorien ab und hält die Servos in ihrer aktuellen Position mittels Sync-Write. `HOLD` verhält sich gleich (Reserviert für spätere Unterscheidung).
+	- **Example:** `STOP:0` — Stoppe/halte linke Hand sofort
+
+- **Command:** `GET:STATUS`
+	- **Description:** Liefert einen kompakten Statusreport (Bus- und Controller-Status). Ausgabe erfolgt via VCP.
+	- **Example:** `GET:STATUS`
+
+**Fehlerantworten & Limits**
+
+- `ERR SYNTAX` — Allgemeiner Syntaxfehler oder unvollständiges Kommando.
+- `ERR GRIPID` — Ungültige Grip-ID (außerhalb der definierten `GripDatabase`).
+- `ERR SPEED` — Ungültiger Prozent- oder Speedwert (z.B. >100% oder negative Werte).
+- `ERR POS` — Ungültige Position (außerhalb 0..4095).
+- `ERR NOEXEC` / `ERR EXEC` — Kein Executor registriert oder Ausführungsfehler.
+- `OK` — Erfolg.
+
+Hinweis: Alle Befehle sind abwärtskompatibel; das ursprüngliche `G:<Side>:<GripID>` Verhalten bleibt unverändert.

@@ -53,6 +53,27 @@ public:
      * @param grip Target grip type
      */
     void setTargetGrip(GripType grip);
+    /**
+     * @brief Set target grip with per-finger percent speeds (0..100)
+     * @param grip Grip type
+     * @param perFingerPercent Pointer to 6 values (percent 0..100)
+     */
+    void setTargetGripWithPercent(GripType grip, const uint16_t* perFingerPercent);
+
+    /**
+     * @brief Set a single finger to a position with optional speed (deg/s). If speed==0, use axis maxSpeed.
+     */
+    void setSingleFingerPosition(Finger finger, uint16_t position, uint16_t speed_deg_per_s = 0);
+
+    /**
+     * @brief Immediately stop all movements for this hand.
+     */
+    void stopImmediate();
+
+    /**
+     * @brief Hold current positions (stop trajectories and command hold to servos).
+     */
+    void holdCurrent();
     
     /**
      * @brief Non-blocking update (called at ~100Hz from main loop)

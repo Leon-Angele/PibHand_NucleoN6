@@ -115,21 +115,11 @@ void SerialCommander::processCommand() noexcept {
             cmd[--cmd_len] = '\0';
         }
 
-        // Parse command: expected "G:<Side>:<GripID>"
-        Hand::Side side;
-        uint8_t gripId = 0;
-        if (!parseGripCommand(reinterpret_cast<uint8_t*>(cmd), cmd_len, side, gripId)) {
-            HAND_DEBUG("CMD ERROR: Invalid syntax or unknown GripID");
+        // Parse command into structured Command
+        ICommandExecutor::Command cmdObj;
+        if (!parseCommand(reinterpret_cast<uint8_t*>(cmd), cmd_len, cmdObj)) {
+            HAND_DEBUG("CMD ERROR: Invalid syntax");
             const char msg[] = "ERR SYNTAX\n";
-            sendResponse(msg, sizeof(msg) - 1);
-            continue;
-        }
-
-        // Validate gripId
-        uint8_t gripCount = static_cast<uint8_t>(GripType::Count);
-        if (gripId >= gripCount) {
-            HAND_DEBUG("CMD ERROR: Invalid GripID");
-            const char msg[] = "ERR GRIPID\n";
             sendResponse(msg, sizeof(msg) - 1);
             continue;
         }
@@ -140,15 +130,38 @@ void SerialCommander::processCommand() noexcept {
             continue;
         }
 
-        bool ok = executor_->executeGrip(side, static_cast<GripType>(gripId));
-        if (ok) {
-            HAND_DEBUG("CMD OK -> Side: %d, GripID: %d", static_cast<int>(side), static_cast<int>(gripId));
-            const char msg[] = "OK\n";
-            sendResponse(msg, sizeof(msg) - 1);
-        } else {
-            const char msg[] = "ERR EXEC\n";
-            sendResponse(msg, sizeof(msg) - 1);
+        // Basic validation for GripID and percent ranges
+        if (cmdObj.type == ICommandExecutor::CommandType::GripDefault ||
+            cmdObj.type == ICommandExecutor::CommandType::GripGlobalPct ||
+            cmdObj.type == ICommandExecutor::CommandType::GripPerFingerPct) {
+            uint8_t gripCount = static_cast<uint8_t>(GripType::Count);
+            uint8_t gripId = static_cast<uint8_t>(cmdObj.grip);
+            if (gripId >= gripCount) {
+                const char msg[] = "ERR GRIPID\n";
+                sendResponse(msg, sizeof(msg) - 1);
+                continue;
+            }
+            if (cmdObj.type == ICommandExecutor::CommandType::GripGlobalPct) {
+                if (cmdObj.percent > 100) { const char msg[] = "ERR SPEED\n"; sendResponse(msg, sizeof(msg)-1); continue; }
+            }
+            if (cmdObj.type == ICommandExecutor::CommandType::GripPerFingerPct) {
+                for (size_t i=0;i<cmdObj.perFingerPercent.size();++i) {
+                    if (cmdObj.perFingerPercent[i] > 100) { const char msg[] = "ERR SPEED\n"; sendResponse(msg, sizeof(msg)-1); goto next_command; }
+                }
+            }
         }
+
+        {
+            bool ok = executor_->executeCommand(cmdObj);
+            if (ok) {
+                const char msg[] = "OK\n";
+                sendResponse(msg, sizeof(msg) - 1);
+            } else {
+                const char msg[] = "ERR EXEC\n";
+                sendResponse(msg, sizeof(msg) - 1);
+            }
+        }
+next_command: ;
     }
 }
 
@@ -170,8 +183,8 @@ void SerialCommander::sendResponse(const char* msg, size_t len) noexcept {
  * @param len Length of message
  */
 
-bool SerialCommander::parseGripCommand(const uint8_t* data, size_t len,
-                                       Hand::Side& outSide, uint8_t& outGripId) noexcept
+bool SerialCommander::parseCommand(const uint8_t* data, size_t len,
+                                   ICommandExecutor::Command& outCmd) noexcept
 {
     if (!data || len == 0) return false;
 
@@ -181,33 +194,128 @@ bool SerialCommander::parseGripCommand(const uint8_t* data, size_t len,
     memcpy(token, data, copy_len);
     token[copy_len] = '\0';
 
-    // Expected format: G:<Side>:<GripID>
     char* p = token;
     // Skip leading spaces
     while (*p && isspace((unsigned char)*p)) ++p;
-    if (*p != 'G' && *p != 'g') return false;
-    ++p;
-    if (*p != ':') return false;
-    ++p;
+    if (!*p) return false;
 
-    // Side must be '0' or '1'
-    if (!(*p == '0' || *p == '1')) return false;
-    outSide = (*p == '0') ? Hand::Side::Left : Hand::Side::Right;
-    ++p;
-    if (*p != ':') return false;
-    ++p;
+    // Extract first keyword up to ':'
+    char* kw = p;
+    while (*p && *p != ':') ++p;
+    if (*p) { *p = '\0'; ++p; }
 
-    // Parse numeric GripID
-    if (!isdigit((unsigned char)*p)) return false;
-    int val = 0;
-    while (*p && isdigit((unsigned char)*p)) {
-        val = val * 10 + (*p - '0');
+    // Normalize keyword to uppercase for comparisons
+    auto equals_icase = [](const char* a, const char* b)->bool {
+        while (*a && *b) {
+            if (toupper((unsigned char)*a) != toupper((unsigned char)*b)) return false;
+            ++a; ++b;
+        }
+        return *a==0 && *b==0;
+    };
+
+    if (equals_icase(kw, "G")) {
+        // Grip command: G:<Side>:<GripID>[:V:<percent>] or [:Vx:<v0>,...]
+        if (!p || !*p) return false;
+        // Side
+        if (!(*p == '0' || *p == '1')) return false;
+        outCmd.side = (*p == '0') ? Hand::Side::Left : Hand::Side::Right;
         ++p;
-        if (val > 255) break;
+        if (*p != ':') return false;
+        ++p;
+        // GripID
+        if (!isdigit((unsigned char)*p)) return false;
+        int val = 0;
+        while (*p && isdigit((unsigned char)*p)) { val = val*10 + (*p - '0'); ++p; if (val>255) break; }
+        outCmd.grip = static_cast<GripType>(static_cast<uint8_t>(val));
+
+        // Optional modifiers
+        if (*p == ':') {
+            ++p;
+            // token could be V:... or Vx:...
+            if (toupper((unsigned char)*p) == 'V') {
+                ++p;
+                if (*p == 'x' || *p == 'X') {
+                    ++p; // Vx
+                    if (*p != ':') return false;
+                    ++p;
+                    // parse 6 comma separated percents
+                    for (size_t i=0;i<static_cast<size_t>(Finger::Count);++i) {
+                        if (!isdigit((unsigned char)*p)) return false;
+                        int num = 0;
+                        while (*p && isdigit((unsigned char)*p)) { num = num*10 + (*p - '0'); ++p; if (num>1000) break; }
+                        outCmd.perFingerPercent[i] = static_cast<uint16_t>(num);
+                        if (i < static_cast<size_t>(Finger::Count)-1) {
+                            if (*p != ',') return false;
+                            ++p;
+                        }
+                    }
+                    outCmd.type = ICommandExecutor::CommandType::GripPerFingerPct;
+                } else {
+                    if (*p != ':') return false;
+                    ++p;
+                    // global percent
+                    if (!isdigit((unsigned char)*p)) return false;
+                    int num = 0;
+                    while (*p && isdigit((unsigned char)*p)) { num = num*10 + (*p - '0'); ++p; if (num>1000) break; }
+                    outCmd.percent = static_cast<uint16_t>(num);
+                    outCmd.type = ICommandExecutor::CommandType::GripGlobalPct;
+                }
+            } else {
+                // Unknown modifier - reject
+                return false;
+            }
+        } else {
+            outCmd.type = ICommandExecutor::CommandType::GripDefault;
+        }
+        return true;
     }
-    if (val < 0) return false;
-    outGripId = static_cast<uint8_t>(val);
-    return true;
+
+    if (equals_icase(kw, "F")) {
+        // Single finger: F:<Side>:<Finger>:<Pos>[:<Speed>]
+        if (!p || !*p) return false;
+        if (!(*p == '0' || *p == '1')) return false;
+        outCmd.side = (*p == '0') ? Hand::Side::Left : Hand::Side::Right;
+        ++p;
+        if (*p != ':') return false;
+        ++p;
+        if (!isdigit((unsigned char)*p)) return false;
+        int f = 0;
+        while (*p && isdigit((unsigned char)*p)) { f = f*10 + (*p - '0'); ++p; if (f>255) break; }
+        outCmd.finger = static_cast<Finger>(static_cast<uint8_t>(f));
+        if (*p != ':') return false;
+        ++p;
+        // Pos
+        if (!isdigit((unsigned char)*p)) return false;
+        int pos = 0;
+        while (*p && isdigit((unsigned char)*p)) { pos = pos*10 + (*p - '0'); ++p; if (pos>10000) break; }
+        outCmd.position = static_cast<uint16_t>(pos);
+        // Optional :speed
+        if (*p == ':') { ++p; if (!isdigit((unsigned char)*p)) return false; int sp=0; while (*p && isdigit((unsigned char)*p)) { sp = sp*10 + (*p - '0'); ++p; if (sp>10000) break; } outCmd.speed_deg_per_s = static_cast<uint16_t>(sp); }
+        outCmd.type = ICommandExecutor::CommandType::SingleFinger;
+        return true;
+    }
+
+    if (equals_icase(kw, "STOP") || equals_icase(kw, "HOLD")) {
+        if (!p || !*p) return false;
+        // expect side next
+        if (!(*p == '0' || *p == '1')) return false;
+        outCmd.side = (*p == '0') ? Hand::Side::Left : Hand::Side::Right;
+        outCmd.type = equals_icase(kw, "STOP") ? ICommandExecutor::CommandType::Stop : ICommandExecutor::CommandType::Hold;
+        return true;
+    }
+
+    if (equals_icase(kw, "GET")) {
+        // expect :STATUS
+        if (!p || !*p) return false;
+        char* sub = p;
+        if (equals_icase(sub, "STATUS")) {
+            outCmd.type = ICommandExecutor::CommandType::GetStatus;
+            return true;
+        }
+    }
+
+    // Unknown command
+    return false;
 }
 
 /**
