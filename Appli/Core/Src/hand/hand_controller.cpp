@@ -39,7 +39,6 @@ HandController::HandController(Hand::Side side, ServoBus& bus)
         moving_[i] = false;
     }
     
-    poll_finger_idx_ = 0;
 }
 
 /**
@@ -241,94 +240,8 @@ void HandController::update()
         BSP_LED_Off(LED_BLUE);
     }
     
-    // ========================================================================
-    // PART 2: ROUND-ROBIN TELEMETRY POLLING
-    // ========================================================================
-    
-    // Poll the bus state machine (non-blocking)
+    // Poll the bus state machine (non-blocking). Telemetry/admittance logic removed.
     bus_.poll();
-    
-    BusState bus_state = bus_.getState();
-    
-    switch (bus_state) {
-        case BusState::IDLE:
-            // Bus is free - start reading current for next finger
-            {
-                uint8_t servo_id = Hand::getServoID(side_, static_cast<Finger>(poll_finger_idx_));
-                if (bus_.startReadCurrent(servo_id)) {
-                    // Read started successfully (state is now WAIT_RX)
-                } else {
-                    // Failed to start read (bus might be busy) - try again next cycle
-                    HAND_DEBUG("Failed to start read for finger %d", poll_finger_idx_);
-                }
-            }
-            break;
-            
-        case BusState::DATA_READY:
-            // Response received - extract current value
-            {
-                auto current_opt = bus_.getReadResult();
-                if (current_opt.has_value()) {
-                    int32_t current = current_opt.value();
-                    
-                    // Check over-current here (call handler from update loop)
-                    uint16_t limit = Hand::getAxisConfig(side_, static_cast<Finger>(poll_finger_idx_)).maxCurrent;
-                    if (current > static_cast<int32_t>(limit)) {
-                        HAND_DEBUG("Overcurrent detected on finger %d: %d mA > %d mA", poll_finger_idx_, current, limit);
-                        handleOverCurrent(poll_finger_idx_, static_cast<int16_t>(current));
-                    } else {
-                        // Feed to AI placeholder (future closed-loop control)
-                        predictGraspAdjustment(poll_finger_idx_, static_cast<int16_t>(current));
-                    }
-                    
-                  
-                    #if DEBUG_PRINTS
-                    
-                    static int16_t currents[6] = {0};
-                    currents[poll_finger_idx_] = current;
-                    static uint32_t last_log_ms = 0;
-                    if ((now - last_log_ms) > 100) {  
-                        HAND_DEBUG("Ströme: [0]:%d [1]:%d [2]:%d [3]:%d [4]:%d [5]:%d mA", 
-                                currents[0], currents[1], currents[2], 
-                                currents[3], currents[4], currents[5]);
-                        last_log_ms = now;
-                    }
-                        
-                    #endif
-                }
-                
-                // Reset bus state and advance to next finger
-                bus_.resetState();
-                poll_finger_idx_ = (poll_finger_idx_ + 1) % FINGER_COUNT;
-            }
-            break;
-            
-        case BusState::TIMEOUT:
-            // Timeout occurred - log error (rate-limited) and advance to next finger
-            {
-                // Global rate-limited logging: only log every 10 seconds total
-                uint32_t now = HAL_GetTick();
-                static uint32_t last_timeout_log_ms = 0;
-                constexpr uint32_t TIMEOUT_LOG_INTERVAL_MS = 10000; // 10s
-                if ((now - last_timeout_log_ms) > TIMEOUT_LOG_INTERVAL_MS) {
-#if DEBUG_PRINTS
-                    uint8_t servo_id = Hand::getServoID(side_, static_cast<Finger>(poll_finger_idx_));
-                    HAND_DEBUG("Read timeout for servo %d (finger %d)", servo_id, poll_finger_idx_);
-#endif
-                    last_timeout_log_ms = now;
-                }
-                
-                // Reset bus state and advance to next finger
-                bus_.resetState();
-                poll_finger_idx_ = (poll_finger_idx_ + 1) % FINGER_COUNT;
-            }
-            break;
-            
-        case BusState::TX_BUSY:
-        case BusState::WAIT_RX:
-            // Bus is busy - wait for next update cycle
-            break;
-    }
 }
 
 /**
@@ -389,38 +302,7 @@ uint16_t HandController::interpolatePosition(size_t finger_idx, uint32_t now)
  * @return uint16_t Servo position in native units (0..4095)
  */
 
-void HandController::predictGraspAdjustment(uint8_t finger_idx, int16_t current)
-{
-    // Placeholder for future AI-based closed-loop control (X-CUBE-AI)
-    // Currently this does not perform any protective actions; over-current
-    // is handled directly in `update()` to keep safety checks local to
-    // the telemetry handling path.
-    (void)finger_idx;
-    (void)current;
-}
-
-void HandController::handleOverCurrent(uint8_t finger_idx, int16_t measured_current)
-{
-    if (finger_idx >= FINGER_COUNT) return;
-
-    // Stop internal movement state for the finger
-    moving_[finger_idx] = false;
-    target_pos_[finger_idx] = current_pos_[finger_idx];
-
-    // Immediately command the servo to hold current position
-    uint8_t id = Hand::getServoID(side_, static_cast<Finger>(finger_idx));
-    uint8_t ids[1] = { id };
-    // Map logical position to physical servo position
-    uint16_t pos[1] = { Hand::mapToServoPos(side_, static_cast<Finger>(finger_idx), current_pos_[finger_idx]) };
-    // Use MICROSTEP_TIME for a short hold command
-    uint16_t times[1] = { MICROSTEP_TIME };
-
-    // Fire-and-forget sync write to enforce hold
-    bus_.syncWritePositions(ids, pos, times, 1);
-
-    // Optional: log the action (already done above)
-    (void)measured_current;
-}
+// telemetry/admittance helpers removed
 
 /**
  * @brief Placeholder for future AI-based grasp adjustment.
