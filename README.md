@@ -1,111 +1,90 @@
- # PIB Hand Control - STM32N6 Intelligence Edition
+# PIB Hand — STM32N6 Firmware
 
- Diese Firmware ermöglicht die Steuerung von zwei Roboterhänden (jeweils 6 Freiheitsgrade) auf Basis des **NUCLEO-N657X0-Q** (STM32N6-Serie). Die Architektur ist auf geringe Latenz, organische Bewegungen und die zukünftige Integration von Edge-AI optimiert.
+Firmware für die Steuerung von zwei 6-DOF Roboterhänden auf dem **NUCLEO-N657X0-Q** (STM32N657X0, Cortex-M55 @ 800 MHz).
 
- ## 🚀 Kern-Features
 
- * **100Hz Real-Time Control Loop**: Aktualisierung aller Fingerpositionen alle 10ms für flüssige Bewegungen.
+## Hardware
 
- 	Hinweis: Im aktuellen Code wird der Hand-Controller in `main.c` alle 10 ms aufgerufen (100 Hz). In der Bridge-Implementierung ist aktuell nur die rechte Hand aktiv — `leftHand.update()` ist in `Appli/Core/Src/hand/hand_bridge.cpp` auskommentiert.
- * **Smooth Trajectories**: Ruckelfreie Beschleunigung und Abbremsung durch S-Kurven-Interpolation (**Smoothstep**).
- * **ROS 2 Interface**: ASCII-basiertes Protokoll für die einfache Integration in ROS 2-Systeme über USB/Seriell.
- * **Adaptive Grasping (AI Placeholder)**: Integrierte Schnittstelle für den **ST Neural-ART Accelerator**, um neuronale Netze zur Griffoptimierung direkt auf der Hardware auszuführen.
- * **DMA-Optimierung**: Non-blocking Kommunikation mit den Servos über den GPDMA-Controller des STM32N6.
- * **Sync Write**: Zeitgleicher Start und Stopp aller Finger einer Hand durch optimierte Bus-Pakete (Instruction 0x83).
+| Komponente | Details |
+|---|---|
+| MCU | STM32N657X0 (Cortex-M55 @ 800 MHz) |
+| Servos | Waveshare/Feetech **STS3215** Serial Bus Servos |
+| Servo-Bus | USART3 — 1 Mbaud, Half-Duplex DMA |
+| VCP (ROS 2) | LPUART1 — 460800 Baud |
+| Encoder | 3× AS5600 (12-bit magnetisch) via TCA9548A I2C-Multiplexer |
+| Encoder-Bus | I2C4 — 400 kHz, DMA (GPDMA1 Ch4/Ch5) |
 
- ## 🛠 Hardware-Konfiguration
+### Encoder-Verdrahtung (TCA9548A @ 0x70)
 
- * **MCU**: STM32N657X0 (Cortex-M55 @ 800 MHz).
- * **Beschleuniger**: Integrierte NPU (Neural-ART) für Deep Learning Tasks.
- * **Servos**: Waveshare / Feetech **STS3215** Serial Bus Servos.
- * **Bus**: USART3 mit 1.000.000 Baud (1 Mbps).
+| TCA-Kanal | Encoder | Gelenk |
+|---|---|---|
+| 0 | AS5600 #0 | Base |
+| 1 | AS5600 #1 | Middle |
+| 2 | AS5600 #2 | Tip |
 
- ## 📡 ROS 2 Protokoll
+Jeder AS5600 (3.3V-Betrieb): VDD5V + VDD3V3 zusammen auf 3.3V, 100nF Bypass-Cap, DIR → GND (CW) oder 3.3V (CCW).  
+TCA9548A: A0/A1/A2 → GND, RESET → 3.3V (darf nicht floaten).  
+Pull-ups: 4.7 kΩ auf dem Haupt-I2C-Bus (PE13/PE14) und je 4.7 kΩ auf jedem aktiven TCA-Kanal.
 
- Der `SerialCommander` verarbeitet Befehle im folgenden Format:
+## Software-Architektur
 
- **BAUD:** `460800`
- **Syntax:** `G:<Side>:<GripID>\n`
+| Datei | Funktion |
+|---|---|
+| `main.c` | Init, 100-Hz-Hauptloop |
+| `hand_config.hpp` | Servo-IDs, Griff-Positionen, Achsen-Limits |
+| `hand_controller.cpp` | Smoothstep-Trajektorie, SyncWrite, Bus-Polling |
+| `serial_commander.cpp` | Ringpuffer-Parser für ASCII-Kommandos |
+| `servo.cpp` | STS3215-Protokoll, DMA-basierter ServoBus |
+| `as5600.cpp` | AS5600 + TCA9548A non-blocking DMA-Treiber |
 
- * **Side**: `0` für die linke Hand, `1` für die rechte Hand.
- * **GripID**: Ganzzahliger Index des gewünschten Griffs aus der Konfigurations-Datenbank.
+**Loop:** `as5600_update()` und `hand_bridge_update()` werden im Hauptloop aufgerufen. Hand-Controller: 100 Hz. Encoder Round-Robin: ~30 ms pro Encoder (10 ms Poll-Periode, 3 Encoder).
 
- **Beispiele:**
- * `G:1:0\n` -> Rechte Hand öffnen (OPEN).
- * `G:0:4\n` -> Linke Hand schließt zum Zylindergriff.
+## Serielles Protokoll (VCP, 460800 Baud)
 
- ## 🖐 Verfügbare Griffe
+**Side:** `0` = links, `1` = rechts
 
- Die Griff-Positionen sind in `hand_config.hpp` als native Servo‑Einheiten (0–4095) definiert. Die hier gezeigten Werte entsprechen direkt den Einträgen in der `GripDatabase`:
+| Befehl | Beschreibung | Beispiel |
+|---|---|---|
+| `G:<Side>:<GripID>` | Griff setzen (Standardgeschwindigkeit) | `G:1:0` |
+| `G:<Side>:<GripID>:V:<pct>` | Griff mit globaler Geschwindigkeit (0–100 %) | `G:0:2:V:50` |
+| `G:<Side>:<GripID>:Vx:<v0>,...,<v5>` | Griff mit Per-Finger-Geschwindigkeit (0–100 %) | `G:1:3:Vx:50,60,70,80,90,100` |
+| `F:<Side>:<Finger>:<Pos>[:<Speed>]` | Einzelnen Finger positionieren (Pos 0–4095, Speed °/s) | `F:0:2:3000:120` |
+| `STOP:<Side>` | Alle Bewegungen sofort stoppen | `STOP:1` |
+| `HOLD:<Side>` | Aktuelle Position halten | `HOLD:0` |
+| `GET:STATUS` | Statusausgabe via VCP | `GET:STATUS` |
 
- | ID | Name | Finger-Konfiguration (0–4095) |
- | :--- | :--- | :--- |
- | 0 | **OPEN** | {0, 0, 0, 0, 0, 0} |
- | 1 | **SPITZGRIFF** | {4095, 4095, 4095, 4095, 4095, 4095} |
- | 2 | **DREIPUNKTGRIFF** | {3185, 3185, 3185, 0, 0, 2047} |
- | 3 | **SCHLUESSELGRIFF** | {2730, 1365, 0, 0, 0, 2730} |
- | 4 | **ZYLINDERGRIFF** | {3640, 3640, 3640, 3640, 3640, 1365} |
- | 5 | **HAKENGRIFF** | {0, 3640, 3640, 3640, 3640, 0} |
- | 6 | **SPHAERISCHER GRIFF** | {2730, 2730, 2730, 2730, 2730, 1820} |
- | 7 | **Stinkefinger** | {4095, 4095, 0, 4095, 4095, 2000} |
- 
+**Antworten:** `OK` bei Erfolg — `ERR SYNTAX` / `ERR GRIPID` / `ERR SPEED` / `ERR POS` / `ERR NOEXEC` / `ERR EXEC` bei Fehler.
 
- ## 📂 Software-Architektur
+## Verfügbare Griffe
 
- * `main.c`: Systemstart, Initialisierung der High-End Peripherie (CACHEAXI, RIF) und 100Hz Loop-Taktung.
- * `hand_config.hpp`: Typ-sichere Enums für Finger und Griffe sowie Hardware-Limits.
- * `hand_controller.cpp`: Berechnung der Zwischenpositionen und Telemetrie-Abfrage der Servos.
- * `serial_commander.cpp`: Ringpuffer-basierter Parser für eintreffende USB-Befehle.
- * `servo.cpp`: Low-Level DMA-Treiber für das STS/SCS-Protokoll.
+Positionen in nativen Servo-Einheiten (0–4095). Reihenfolge: Thumb, Index, Middle, Ring, Pinky, ThumbRotation.
 
- ### HandController-Logik
- - **Taktung:** Läuft mit 100 Hz (je 10 ms Zyklus).
- - **setTargetGrip:** Setzt Zielgriff sofort und startet eine sanfte Trajektorie zum Ziel. Jeder Finger bewegt sich mit seiner individuellen Geschwindigkeit aus `AxisSettings` (in Grad/Sekunde, wobei 0-4095 Servo-Einheiten = 360°).
- - **Geschwindigkeitssteuerung:** Config-basiert (`maxSpeed` in °/s), jeder Finger berechnet seine Fahrtzeit automatisch: `duration = (Δ Position × 1000) / (maxSpeed × 4095/360)`. Finger kommen asynchron an.
- - **Interpolation:** Zwischenpositionen werden via Smoothstep (S‑Kurve) berechnet für gleichmäßige Bewegung mit sanftem Anfahren/Abbremsen.
- - **SyncWrite:** Positionsbefehle werden mit `syncWritePositions` an alle Finger gesendet (non-blocking), servo `time` Parameter konstant bei 10 ms für smoothe Ausführung.
- - **Telemetrie (Round‑Robin):** Bus wird mit `bus.poll()` getaktet; `startReadCurrent` initiiert RX-before-TX; bei `DATA_READY` wird das Ergebnis verarbeitet und zum nächsten Finger weitergerückt.
- - **Predict-Hook:** `predictGraspAdjustment` dient als Hook für zukünftige AI‑Anpassungen (Slip/Force).
- - **Scope:** Aktuell wird nur die rechte Hand regelmäßig upgedatet (`leftHand.update()` auskommentiert).
+| ID | Name | Thumb | Index | Middle | Ring | Pinky | ThumbRot |
+|---|---|---|---|---|---|---|---|
+| 0 | OPEN | 0 | 0 | 0 | 0 | 0 | 0 |
+| 1 | ZEIGEN | 4095 | 0 | 4095 | 4095 | 4095 | 2047 |
+| 2 | DREIPUNKTGRIFF | 3185 | 3185 | 3185 | 0 | 0 | 2047 |
+| 3 | SCHLUESSELGRIFF | 2730 | 1365 | 0 | 0 | 0 | 2730 |
+| 4 | ZYLINDERGRIFF | 3640 | 3640 | 3640 | 3640 | 3640 | 1365 |
+| 5 | HAKENGRIFF | 0 | 3640 | 3640 | 3640 | 3640 | 0 |
+| 6 | SPHAERISCHER_GRIFF | 2730 | 2730 | 2730 | 2730 | 2730 | 1820 |
+| 7 | MITTELFINGER | 4095 | 4095 | 0 | 4095 | 4095 | 2000 |
+| 8 | ROCKS | 0 | 0 | 4095 | 4095 | 0 | 2047 |
 
- ## 🧠 Edge-AI Integration
+## Flashen
 
- Dank der Cortex-M55 Architektur und der dedizierten NPU auf dem N6-Chip können komplexe Modelle zur Slip-Detection (Rutsch-Erkennung) oder taktilen Rückmeldung implementiert werden. Die Funktion `predictGraspAdjustment` im `HandController` dient als dedizierter Hook für X-CUBE-AI generierten Code.
+Voraussetzungen: STM32CubeIDE + STM32CubeProgrammer im Standardpfad installiert, beide Projekte (`FSBL` und `Appli`) gebaut.
 
-**Serial Commands**
+```powershell
+# Im Workspace-Root ausführen:
+.\scripts\sign_and_deploy.ps1
+```
 
-- **Command:** `G:<Side>:<GripID>`
-	- **Description:** Legacy-Aufruf zum Setzen eines vordefinierten Griffs. Nutzt die in `hand_config.hpp` konfigurierten `maxSpeed`-Werte.
-	- **Example:** `G:1:0` — Rechte Hand öffnen (OPEN)
+Das Script führt folgende Schritte aus:
+1. **Signiert** `FSBL\Debug\*_FSBL.bin` mit dem STM32 SigningTool (Header v2.3, Zieladresse `0x80000000`)
+2. **Signiert** `Appli\Debug\*_Appli.bin` (Zieladresse `0x34000000`)
+3. **Flasht** FSBL-Image auf externen Flash → `0x70000000`
+4. **Flasht** Appli-Image auf externen Flash → `0x70100000` (via External Loader `MX25UM51245G`)
+5. **Reset** des Boards via SWD
 
-- **Command:** `G:<Side>:<GripID>:V:<percent>`
-	- **Description:** Gleicher Griff, aber alle Finger bewegen sich mit `percent` (0–100) relativ zur konfigurierten `maxSpeed`.
-	- **Example:** `G:0:2:V:50` — Linke Hand, Griff 2, 50% der Max-Geschwindigkeit
-
-- **Command:** `G:<Side>:<GripID>:Vx:<v0>,...,<v5>`
-	- **Description:** Per-Finger-Prozentwerte (je 0–100). Reihenfolge: Thumb, Index, Middle, Ring, Pinky, ThumbRotation.
-	- **Example:** `G:1:3:Vx:50,60,70,80,90,100`
-
-- **Command:** `F:<Side>:<Finger>:<Pos>[:<Speed>]`
-	- **Description:** Setzt einen einzelnen Finger (`Finger` Index 0..5) auf Position `Pos` (0..4095). Optionaler `Speed` in °/s; wenn weggelassen, wird `maxSpeed` aus `hand_config.hpp` verwendet.
-	- **Example:** `F:0:2:3000` — Linke Hand, Middle auf 3000 mit Standardgeschwindigkeit
-	- **Example:** `F:0:2:3000:120` — Linke Hand, Middle auf 3000 mit 120 °/s
-
-- **Command:** `STOP:<Side>` / `HOLD:<Side>`
-	- **Description:** `STOP` bricht alle laufenden Trajektorien ab und hält die Servos in ihrer aktuellen Position mittels Sync-Write. `HOLD` verhält sich gleich (Reserviert für spätere Unterscheidung).
-	- **Example:** `STOP:0` — Stoppe/halte linke Hand sofort
-
-- **Command:** `GET:STATUS`
-	- **Description:** Liefert einen kompakten Statusreport (Bus- und Controller-Status). Ausgabe erfolgt via VCP.
-	- **Example:** `GET:STATUS`
-
-**Fehlerantworten & Limits**
-
-- `ERR SYNTAX` — Allgemeiner Syntaxfehler oder unvollständiges Kommando.
-- `ERR GRIPID` — Ungültige Grip-ID (außerhalb der definierten `GripDatabase`).
-- `ERR SPEED` — Ungültiger Prozent- oder Speedwert (z.B. >100% oder negative Werte).
-- `ERR POS` — Ungültige Position (außerhalb 0..4095).
-- `ERR NOEXEC` / `ERR EXEC` — Kein Executor registriert oder Ausführungsfehler.
-- `OK` — Erfolg.
-
-Hinweis: Alle Befehle sind abwärtskompatibel; das ursprüngliche `G:<Side>:<GripID>` Verhalten bleibt unverändert.
+Nach dem Flashen ggf. manuell RESET drücken, falls das Board nicht automatisch startet.
