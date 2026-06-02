@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "app_x-cube-ai.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -129,6 +130,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_LPUART1_UART_Init();
   MX_I2C4_Init();
+  MX_X_CUBE_AI_Init();
   SystemIsolation_Config();
   /* USER CODE BEGIN 2 */
   BSP_LED_Init(LED_RED);
@@ -140,6 +142,9 @@ int main(void)
   as5600_init(&hi2c4, 0x70);
   as5600_set_channel_map(0, 1, 2);
   as5600_start_polling(10);
+
+  /* initialize NN runtime and network instance */
+  blockernn_model_init();
 
   // Start VCP RX DMA in circular mode for continuous reception
   HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);
@@ -167,11 +172,49 @@ int main(void)
     // Process complete commands from SerialCommander
     commander_bridge_process();
     
+    /* Run NN once per second and print result */
+    static uint32_t last_nn_tick = 0;
+    uint32_t now = HAL_GetTick();
+    if ((now - last_nn_tick) >= 1000)
+    {
+      last_nn_tick = now;
+      static float x = 0.0f;
+      float y = 0.0f;
+      x += 0.1f; /* increment input */
+      if (blockernn_infer(x, &y) == 0)
+      {
+        printf("NN in=%.6f out=%.6f\r\n", x, y);
+      }
+      else
+      {
+        printf("NN inference failed\r\n");
+      }
+    }
+    
     /* USER CODE END WHILE */
 
+  MX_X_CUBE_AI_Process();
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
+}
+
+/**
+  * @brief Peripherals Common Clock Configuration
+  * @retval None
+  */
+void PeriphCommonClock_Config(void)
+{
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
+
+  /** Initializes the peripherals clock
+  */
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_CKPER;
+  PeriphClkInitStruct.CkperClockSelection = RCC_CLKPCLKSOURCE_HSI;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /**
@@ -254,7 +297,7 @@ static void MX_I2C4_Init(void)
 
   /* USER CODE END I2C4_Init 1 */
   hi2c4.Instance = I2C4;
-  hi2c4.Init.Timing = 0x009034B6;
+  hi2c4.Init.Timing = 0x109035B7;
   hi2c4.Init.OwnAddress1 = 0;
   hi2c4.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c4.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -522,6 +565,7 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

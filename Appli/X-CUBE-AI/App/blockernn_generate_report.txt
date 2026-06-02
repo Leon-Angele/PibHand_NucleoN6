@@ -1,0 +1,115 @@
+ST Edge AI Core v2.2.0-20266 2adc00962
+Created date          : 2026-06-02 12:28:45
+Parameters            : generate --target stm32n6 --name blockernn -m C:/Users/leon.angele/Desktop/fuckAround/PibHand_NucleoN6/models/sin_model.tflite --st-neural-art n6-allmems-O3@C:/Users/leon.angele/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/scripts/N6_scripts/user_neuralart.json --workspace C:/Users/LEON~1.ANG/AppData/Local/Temp/mxAI_workspace21639315846400018256978929412992897 --output C:/Users/leon.angele/.stm32cubemx/blockernn_output
+
+Model name - sin_model
+------ ----------------------------- ------------- ------------- ------- -------------------------- 
+m_id   layer (original)              oshape        param/size       macc               connected to 
+------ ----------------------------- ------------- ------------- ------- -------------------------- 
+0      dense_input ()                [b:1,c:1]                                                      
+       dense_kernel_transpose ()     [b:30,c:1]    30/120                                           
+       dense_MatMul_bias ()          [b:30]        30/120                                           
+       gemm_0 (FULLY_CONNECTED)      [b:1,c:30]                       60                dense_input 
+                                                                             dense_kernel_transpose 
+                                                                                  dense_MatMul_bias 
+------ ----------------------------- ------------- ------------- ------- -------------------------- 
+1      nl_1 (LOGISTIC)               [b:1,c:30]                      300                     gemm_0 
+------ ----------------------------- ------------- ------------- ------- -------------------------- 
+2      dense_1_kernel_transpose ()   [b:40,c:30]   1,200/4,800                                      
+       dense_1_MatMul_bias ()        [b:40]        40/160                                           
+       gemm_2 (FULLY_CONNECTED)      [b:1,c:40]                    1,240                       nl_1 
+                                                                           dense_1_kernel_transpose 
+                                                                                dense_1_MatMul_bias 
+------ ----------------------------- ------------- ------------- ------- -------------------------- 
+3      nl_3 (LOGISTIC)               [b:1,c:40]                      400                     gemm_2 
+------ ----------------------------- ------------- ------------- ------- -------------------------- 
+4      dense_2_kernel_transpose ()   [b:1,c:40]    40/160                                           
+       dense_2_MatMul_bias ()        [b:1]         1/4                                              
+       gemm_4 (FULLY_CONNECTED)      [b:1,c:1]                        41                       nl_3 
+                                                                           dense_2_kernel_transpose 
+                                                                                dense_2_MatMul_bias 
+------ ----------------------------- ------------- ------------- ------- -------------------------- 
+model: macc=2,041 weights=5,364 activations=-- io=--
+
+
+
+
+
+Compilation details
+------------------------------------------------------------------------------------
+Compiler version: 1.1.1-14
+Compiler arguments:  -i C:\Users\leon.angele\.stm32cubemx\blockernn_output\sin_model_OE_3_3_0.onnx --json-quant-file C:\Users\leon.angele\.stm32cubemx\blockernn_output\sin_model_OE_3_3_0_Q.json -g blockernn.c --load-mdesc C:\Users\leon.angele\STM32Cube\Repository\Packs\STMicroelectronics\X-CUBE-AI\10.2.0\scripts\N6_scripts\my_mdescs\stm32n6.mdesc --load-mpool C:\Users\leon.angele\STM32Cube\Repository\Packs\STMicroelectronics\X-CUBE-AI\10.2.0\scripts\N6_scripts\my_mpools\stm32n6.mpool --save-mpool-file C:\Users\leon.angele\AppData\Local\Temp\mxAI_workspace21639315846400018256978929412992897\neural_art__blockernn\stm32n6.mpool --out-dir-prefix C:\Users\leon.angele\AppData\Local\Temp\mxAI_workspace21639315846400018256978929412992897\neural_art__blockernn/ --optimization 3 --all-buffers-info --mvei --cache-maintenance --Oauto-sched --native-float --enable-virtual-mem-pools --Omax-ca-pipe 4 --Ocache-opt --Os --output-info-file c_info.json --network-name blockernn
+====================================================================================
+
+Memory usage information  (input/output buffers are included in activations)
+------------------------------------------------------------------------------------
+	flexMEM    [0x34000000 - 0x34000000]:          0  B /          0  B  (  0.00 % used) -- weights:          0  B (  0.00 % used)  activations:          0  B (  0.00 % used)
+	cpuRAM1    [0x34064000 - 0x34064000]:          0  B /          0  B  (  0.00 % used) -- weights:          0  B (  0.00 % used)  activations:          0  B (  0.00 % used)
+	cpuRAM2    [0x34100000 - 0x34200000]:          0  B /      1.000 MB  (  0.00 % used) -- weights:          0  B (  0.00 % used)  activations:          0  B (  0.00 % used)
+	npuRAM3    [0x34200000 - 0x34270000]:          0  B /    448.000 kB  (  0.00 % used) -- weights:          0  B (  0.00 % used)  activations:          0  B (  0.00 % used)
+	npuRAM4    [0x34270000 - 0x342E0000]:          0  B /    448.000 kB  (  0.00 % used) -- weights:          0  B (  0.00 % used)  activations:          0  B (  0.00 % used)
+	npuRAM5    [0x342E0000 - 0x34350000]:        320  B /    448.000 kB  (  0.07 % used) -- weights:          0  B (  0.00 % used)  activations:        320  B (  0.07 % used)
+	npuRAM6    [0x34350000 - 0x343C0000]:          0  B /    448.000 kB  (  0.00 % used) -- weights:          0  B (  0.00 % used)  activations:          0  B (  0.00 % used)
+	octoFlash  [0x71000000 - 0x78000000]:      5.254 kB /    112.000 MB  (  0.00 % used) -- weights:      5.254 kB (  0.00 % used)  activations:          0  B (  0.00 % used)
+	hyperRAM   [0x90000000 - 0x92000000]:          0  B /     32.000 MB  (  0.00 % used) -- weights:          0  B (  0.00 % used)  activations:          0  B (  0.00 % used)
+---
+Total:                                             5.566 kB                                  -- weights:      5.254 kB                  activations:        320  B                   
+====================================================================================
+
+
+Used memory ranges
+------------------------------------------------------------------------------------
+	npuRAM5    [0x342E0000 - 0x34350000]: 0x342E0000-0x342E0140
+	octoFlash  [0x71000000 - 0x78000000]: 0x71000000-0x71001510
+====================================================================================
+
+Epochs details
+------------------------------------------------------------------------------------
+Total number of epochs: 14 of which 8 implemented in software
+---
+epoch ID   HW/SW/EC Operation (SW only)
+epoch 1       HW    
+epoch 2      -SW-   (        Conv        )
+epoch 3       HW    
+epoch 4      -SW-   (        Add         )
+epoch 5      -SW-   (      Sigmoid       )
+epoch 6       HW    
+epoch 7      -SW-   (        Conv        )
+epoch 8       HW    
+epoch 9      -SW-   (        Add         )
+epoch 10     -SW-   (      Sigmoid       )
+epoch 11      HW    
+epoch 12     -SW-   (        Conv        )
+epoch 13      HW    
+epoch 14     -SW-   (        Add         )
+==================================================================================== 
+ Requested memory size by section - "stm32n6npu" target
+ ------------------------------- -------- -------- ------ ----- 
+ module                              text   rodata   data   bss 
+ ------------------------------- -------- -------- ------ ----- 
+ NetworkRuntime1020_CM55_GCC.a     10,904        0      0     0 
+ blockernn.o                          972    6,269      0     0 
+ lib (toolchain)*                  12,296    2,262      0     0 
+ ll atonn runtime                   6,240    3,071      0    13 
+ ------------------------------- -------- -------- ------ ----- 
+ RT total**                        30,412   11,602      0    13 
+ ------------------------------- -------- -------- ------ ----- 
+ weights                                0    5,380      0     0 
+ activations                            0        0      0   320 
+ io                                     0        0      0     0 
+ ------------------------------- -------- -------- ------ ----- 
+ TOTAL                             30,412   16,982      0   333 
+ ------------------------------- -------- -------- ------ ----- 
+ *  toolchain objects (libm/libgcc*)
+ ** RT AI runtime objects (kernels+infrastructure)
+  
+  Summary - "stm32n6npu" target
+  --------------------------------------------------
+               FLASH (ro)      %*   RAM (rw)      % 
+  --------------------------------------------------
+  RT total         42,014   88.6%         13   3.9% 
+  --------------------------------------------------
+  TOTAL            47,394                333        
+  --------------------------------------------------
+  *  rt/total
+
