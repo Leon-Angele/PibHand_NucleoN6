@@ -405,6 +405,7 @@ static void MX_RAMCFG_Init(void)
   {
     Error_Handler();
   }
+  HAL_RAMCFG_EnableAXISRAM(&hramcfg_SRAM3);
 
   /** Initialize RAMCFG SRAM4
   */
@@ -413,6 +414,7 @@ static void MX_RAMCFG_Init(void)
   {
     Error_Handler();
   }
+  HAL_RAMCFG_EnableAXISRAM(&hramcfg_SRAM4);
 
   /** Initialize RAMCFG SRAM5
   */
@@ -421,6 +423,7 @@ static void MX_RAMCFG_Init(void)
   {
     Error_Handler();
   }
+  HAL_RAMCFG_EnableAXISRAM(&hramcfg_SRAM5);
 
   /** Initialize RAMCFG SRAM6
   */
@@ -429,6 +432,7 @@ static void MX_RAMCFG_Init(void)
   {
     Error_Handler();
   }
+  HAL_RAMCFG_EnableAXISRAM(&hramcfg_SRAM6);
   /* USER CODE BEGIN RAMCFG_Init 2 */
 
   /* USER CODE END RAMCFG_Init 2 */
@@ -601,6 +605,7 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
 /**
   * @brief  This function is executed in case of error occurrence.
+  * @param None
   * @retval None
   */
 void Error_Handler(void)
