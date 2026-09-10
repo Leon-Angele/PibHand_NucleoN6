@@ -58,6 +58,9 @@
 extern DMA_HandleTypeDef handle_GPDMA1_Channel3;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel2;
 extern UART_HandleTypeDef hlpuart1;
+extern DMA_NodeTypeDef Node_GPDMA1_Channel6;
+extern DMA_QListTypeDef List_GPDMA1_Channel6;
+extern DMA_HandleTypeDef handle_GPDMA1_Channel6;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel5;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel4;
 extern I2C_HandleTypeDef hi2c4;
@@ -303,6 +306,20 @@ void GPDMA1_Channel5_IRQHandler(void)
   /* USER CODE BEGIN GPDMA1_Channel5_IRQn 1 */
 
   /* USER CODE END GPDMA1_Channel5_IRQn 1 */
+}
+
+/**
+  * @brief This function handles GPDMA1 Channel 6 global interrupt.
+  */
+void GPDMA1_Channel6_IRQHandler(void)
+{
+  /* USER CODE BEGIN GPDMA1_Channel6_IRQn 0 */
+
+  /* USER CODE END GPDMA1_Channel6_IRQn 0 */
+  HAL_DMA_IRQHandler(&handle_GPDMA1_Channel6);
+  /* USER CODE BEGIN GPDMA1_Channel6_IRQn 1 */
+
+  /* USER CODE END GPDMA1_Channel6_IRQn 1 */
 }
 
 /**

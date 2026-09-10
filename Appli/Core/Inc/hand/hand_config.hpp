@@ -21,6 +21,11 @@
 #define DEBUG_PRINTS 0
 #endif
 
+// AS5600 encoder support: set to 1 to enable the driver and I2C polling.
+#ifndef AS5600_ENABLED
+#define AS5600_ENABLED 0
+#endif
+
 #if DEBUG_PRINTS
 #ifdef __cplusplus
 #include <cstdio>
