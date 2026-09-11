@@ -9,7 +9,7 @@
  * - Round-robin telemetry polling (1 servo per update cycle)
  * - Async state machine for closed-loop control
  *
- * Called from main loop at ~100Hz - MUST be non-blocking!
+ * Called from the 500 Hz TIM6 update event - MUST be non-blocking!
  */
 #ifndef HAND_CONTROLLER_HPP
 #define HAND_CONTROLLER_HPP
@@ -29,7 +29,7 @@ namespace HandControl {
  * - Part 1 (Movement): Interpolates trajectories and sends syncWritePositions
  * - Part 2 (Telemetry): Round-robin polling of servo current for closed-loop control
  * 
- * Update frequency: ~100Hz (called from main loop)
+ * Update frequency: 500Hz (called from the TIM6 update event)
  * Round-robin cycle: 60ms (6 servos × 10ms timeout)
  */
 class HandController {
@@ -76,7 +76,7 @@ public:
     void holdCurrent();
     
     /**
-     * @brief Non-blocking update (called at ~100Hz from main loop)
+     * @brief Non-blocking update (called at 500Hz from the TIM6 update event)
      * 
      * Part 1: Trajectory interpolation + syncWritePositions
      * Part 2: Round-robin telemetry polling (1 servo per cycle)

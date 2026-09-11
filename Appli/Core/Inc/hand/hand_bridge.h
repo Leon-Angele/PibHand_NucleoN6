@@ -31,7 +31,7 @@ void hand_bridge_init(void) ;
 /* Trigger a grip on given side (speed from config) */
 bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip);
 
-/* Called from main loop to update both hands (100Hz) */
+/* Called from the TIM6 update event to update both hands (500Hz) */
 void hand_bridge_update(void) ;
 
 /* Ping all configured servos and print availability to VCP */

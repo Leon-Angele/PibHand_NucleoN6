@@ -157,10 +157,11 @@ bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip) {
 }
 
 /**
- * @brief Periodic update called from the main loop.
+ * @brief Periodic update called from the fixed-rate ADC control tick.
  *
  * Calls the per-hand `update()` method which performs non-blocking
- * interpolation and telemetry polling. Should be executed at ~100Hz.
+ * interpolation and telemetry polling. It is driven by the 500 Hz TIM6 update
+ * event.
  */
 void hand_bridge_update(void) {
     rightHand.update();

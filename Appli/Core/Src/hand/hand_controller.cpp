@@ -248,8 +248,8 @@ void HandController::update()
  * @brief Periodic non-blocking update.
  *
  * Performs trajectory interpolation, sends sync write packets to servos and
- * advances the round-robin telemetry state machine. Intended to be called
- * from the main loop at ~100Hz.
+ * advances the round-robin telemetry state machine. It is called through the
+ * TIM6 update callback at the 500 Hz control rate.
  */
 
 // ============================================================================

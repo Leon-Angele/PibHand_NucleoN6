@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include "hand/hand_bridge.h"
+#include "hand/fsr400.hpp"
 #include "hand/hand_config.hpp"
 #if AS5600_ENABLED
 #include "hand/as5600.hpp"
@@ -95,6 +96,7 @@ static void MX_ADC1_Init(void);
 static void MX_TIM6_Init(void);
 static void SystemIsolation_Config(void);
 /* USER CODE BEGIN PFP */
+void PeriphCommonClock_Config(void);
 
 /* USER CODE END PFP */
 
@@ -130,6 +132,7 @@ int main(void)
   /* USER CODE END Init */
 
   /* USER CODE BEGIN SysInit */
+  PeriphCommonClock_Config();
 
   /* USER CODE END SysInit */
 
@@ -160,6 +163,12 @@ int main(void)
 
   // Start VCP RX DMA in circular mode for continuous reception
   HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);
+
+  // ADC DMA is started before TIM6; the TIM6 update event is the fixed 500 Hz tick.
+  if (!FSR_Start(&hadc1, &htim6))
+  {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -171,9 +180,6 @@ int main(void)
     as5600_update();
 #endif
 
-    // Update hand controllers (interpolation, telemetry polling)
-    hand_bridge_update();
-    
     // Process VCP RX from DMA circular buffer
     uint32_t current_pos = VCP_RX_BUF_SIZE - __HAL_DMA_GET_COUNTER(hlpuart1.hdmarx);
     while (vcp_rx_last_pos != current_pos) {
@@ -264,7 +270,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_5;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_23CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_1499CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
@@ -728,6 +734,24 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+  if ((hadc != NULL) && (hadc->Instance == ADC1))
+  {
+    // This callback follows the ADC/GPDMA transfer started by TIM6 TRGO.
+    FSR_Update();
+  }
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if ((htim != NULL) && (htim->Instance == TIM6))
+  {
+    // Run both hand controllers directly on the TIM6 update event.
+    hand_bridge_update();
+  }
+}
+
   PUTCHAR_PROTOTYPE
   {
     // Wait for previous TX to complete (semi-blocking for printf)
