@@ -1,3 +1,6 @@
 FSBL/Debug/
 Appli/Debug/
 *.bin
+__pycache__/
+*.py[cod]
+.venv/
