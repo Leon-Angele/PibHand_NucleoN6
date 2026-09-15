@@ -226,7 +226,8 @@ void HandController::update(const FSR_Snapshot& fsr)
         command_percent_[i] = std::clamp(command, 0.0f, 100.0f);
         command_ticks_[i] = Hand::percentToServoPos(static_cast<Finger>(i), command_percent_[i]);
         any_moving = any_moving || moving_[i] ||
-                     (i >= CONTROLLED_FINGER_FIRST && admittance_enabled_ &&
+                     (i >= CONTROLLED_FINGER_FIRST && i <= CONTROLLED_FINGER_LAST &&
+                      admittance_enabled_ &&
                       std::fabs(admittance_[i - CONTROLLED_FINGER_FIRST].velocity()) > 0.01f);
     }
 
