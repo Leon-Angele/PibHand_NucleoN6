@@ -228,6 +228,127 @@ PibHand_NucleoN6_Appli.bin
 PibHand_NucleoN6_Appli.map
 ```
 
+## Flashen und Starten
+
+Das Projektziel ist das **NUCLEO-N657X0-Q mit STM32N657**. Zum normalen
+Flashen und Ausfuehren wird der integrierte ST-LINK des Boards direkt ueber
+USB-C verwendet. Dafuer muss `docs\BootDevMode.png` die Jumper auf **DevelopmentMode** stehen.
+In diesem kann auch der Debugger genutzt werden.
+
+Um Final den Code aus dem Flash zu Booten müssen die Jumper auf **BootMode**  stehen
+
+### Flash-Adressen
+
+Im Projekt heisst der Bootloader **FSBL** (First Stage Boot Loader). Falls mit
+`VSBL` derselbe Bootloader gemeint ist, gelten die FSBL-Adressen.
+
+Die tatsaechlichen externen Flash-Adressen aus
+`scripts/sign_and_deploy.ps1` sind:
+
+| Image | CubeProgrammer Flash-Adresse | Zweck |
+|---|---:|---|
+| FSBL | `0x70000000` | Bootloader im externen XSPI2-Flash |
+| Applikation | `0x70100000` | signierte Applikation im externen XSPI2-Flash |
+
+Der verwendete externe Loader ist:
+
+```text
+MX25UM51245G_STM32N6570-NUCLEO.stldr
+```
+
+Die Adressen im SignTool-Aufruf sind davon zu unterscheiden:
+
+| Image | SignTool `-of` |
+|---|---:|
+| FSBL | `0x80000000` |
+| Applikation | `0x34000000` |
+
+`-of` ist der Offset beziehungsweise die Zieladresse fuer die Trusted-Image-
+Erzeugung. Diese Werte sind nicht die Adressen, an die `STM32_Programmer_CLI`
+die fertigen signierten Dateien schreibt.
+
+### Linker- und Laufzeitadressen
+
+Die aktiven Linker-Skripte verwenden folgende interne Adressen:
+
+| Image | ROM / Code | RAM |
+|---|---:|---:|
+| FSBL | `0x34180400` | `0x341C0000` |
+| Applikation | `0x34000400` | `0x34080000` |
+
+Der FSBL verwendet zusaetzlich:
+
+```text
+EXTMEM_HEADER_OFFSET             = 0x00000400
+EXTMEM_LRUN_SOURCE_ADDRESS      = 0x00100000
+EXTMEM_LRUN_DESTINATION_ADDRESS = 0x34000000
+```
+
+Die externe Quelle `0x00100000` liegt im verwendeten XSPI2-Mapping ab
+`0x70000000` somit bei `0x70100000`. Die Applikation wird vom FSBL in den
+internen AXISRAM1-Bereich kopiert. Der Vektor-/Codebeginn liegt dort wegen des
+400-Byte-Headers bei `0x34000400`.
+
+Nicht direkt auf `0x34000400`, `0x34080000`, `0x34180400` oder `0x341C0000`
+flashen. Das sind Linker-/Laufzeitadressen, nicht die externen
+CubeProgrammer-Schreibadressen.
+
+### Automatisches Deployment-Skript
+
+Das vorhandene Skript ist:
+
+```text
+scripts/sign_and_deploy.ps1
+```
+
+Es erledigt:
+
+1. FSBL signieren.
+2. Applikation signieren.
+3. Signiertes FSBL nach `0x70000000` schreiben.
+4. Signierte Applikation nach `0x70100000` schreiben.
+5. Verifizieren und Hardware-Reset ausloesen.
+
+Das Skript benoetigt:
+
+```text
+arm-none-eabi-objcopy.exe
+STM32_Programmer_CLI.exe
+STM32_SigningTool_CLI.exe
+MX25UM51245G_STM32N6570-NUCLEO.stldr
+```
+
+Die im Skript hinterlegten Standardpfade sind:
+
+```text
+C:\ST\STM32CubeIDE_1.15.0\...
+C:\ST\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe
+C:\ST\STM32CubeProgrammer\bin\STM32_SigningTool_CLI.exe
+C:\ST\STM32CubeProgrammer\bin\ExternalLoader\MX25UM51245G_STM32N6570-NUCLEO.stldr
+```
+
+Wenn CubeIDE oder CubeProgrammer an einem anderen Ort installiert sind, muessen
+die Variablen am Anfang des Skripts angepasst werden.
+
+### Flashen direkt mit STM32CubeProgrammer
+
+Das Flashen ist auch ohne das PowerShell-Skript moeglich. Zuerst muessen die
+Images mit `STM32_SigningTool_CLI.exe` signiert werden. Danach kann der gleiche
+Schreibvorgang mit `STM32_Programmer_CLI.exe` ausgefuehrt werden:
+
+```powershell
+& 'C:\ST\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe' `
+  -c port=SWD mode=UR reset=HwReset `
+  -el 'C:\ST\STM32CubeProgrammer\bin\ExternalLoader\MX25UM51245G_STM32N6570-NUCLEO.stldr' `
+  -w 'PibHand_NucleoN6_FSBL-trusted.bin' 0x70000000 -v `
+  -w 'PibHand_NucleoN6_Appli-trusted.bin' 0x70100000 -v `
+  -rst
+```
+
+Die Datei `PibHand_NucleoN6_Appli.bin` darf nicht un-signiert direkt als
+Applikation in den externen Flash geschrieben werden, wenn der FSBL-Trusted-
+Bootpfad verwendet wird.
+
 ## Grenzen und Inbetriebnahme
 
 - Die FSR-N-Werte muessen vor einer sicherheitskritischen Nutzung kalibriert werden.
