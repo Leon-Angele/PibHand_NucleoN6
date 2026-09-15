@@ -1,316 +1,296 @@
-/**
- * @file hand_controller.cpp
- * @brief Implementation of the non-blocking HandController and helpers.
- * @author Leon Angele
- * @date 2026-05-08
- *
- * Non-blocking trajectory interpolation and round-robin telemetry polling
- * for the robotic hand (6 servos per hand).
- */
-
 #include "hand/hand_controller.hpp"
+
+#include <algorithm>
 #include <cmath>
-// BSP LED control for Nucleo board
-#include "stm32n6xx_nucleo.h"
 
 namespace HandControl {
 
-// Microstep time (ms) used when controller drives micro-steps
-static constexpr uint16_t MICROSTEP_TIME = 10;
-// LED toggle interval when servos are moving (ms)
-static constexpr uint32_t LED_TOGGLE_MS = 100;
-// Last tick when we toggled the blue LED
-static uint32_t led_last_toggle_ms = 0;
-
-// ============================================================================
-// CONSTRUCTOR
-// ============================================================================
-
-HandController::HandController(Hand::Side side, ServoBus& bus)
-    : side_(side), bus_(bus)
-{
-    // Initialize all fingers to open position (0)
-    for (size_t i = 0; i < FINGER_COUNT; ++i) {
-        start_pos_[i] = 0;
-        target_pos_[i] = 0;
-        current_pos_[i] = 0;
-        start_time_ms_[i] = 0;
-        duration_ms_[i] = 0;
-        moving_[i] = false;
-    }
-    
+namespace {
+constexpr uint16_t MICROSTEP_TIME_MS = 10;
+constexpr uint32_t TICK_MS = 2;
+constexpr uint32_t FAULT_FORCE_UNREACHED = 1U << 0;
+constexpr uint32_t FAULT_EXTENSION_LIMIT = 1U << 1;
 }
 
-/**
- * @brief Construct a new HandController instance.
- *
- * Initializes internal state for trajectory interpolation and telemetry.
- * @param side Hand::Side indicating left or right hand
- * @param bus Reference to the shared ServoBus instance
- */
+HandController::HandController(ServoBus& bus)
+    : bus_(bus),
+      admittance_{
+          AdmittanceController({DEFAULT_ADMITTANCE_STIFFNESS_N_PER_PERCENT,
+                                DEFAULT_ADMITTANCE_NATURAL_FREQUENCY_HZ,
+                                DEFAULT_FORCE_DEADBAND_N, 120.0f}),
+          AdmittanceController({DEFAULT_ADMITTANCE_STIFFNESS_N_PER_PERCENT,
+                                DEFAULT_ADMITTANCE_NATURAL_FREQUENCY_HZ,
+                                DEFAULT_FORCE_DEADBAND_N, 120.0f}),
+          AdmittanceController({DEFAULT_ADMITTANCE_STIFFNESS_N_PER_PERCENT,
+                                DEFAULT_ADMITTANCE_NATURAL_FREQUENCY_HZ,
+                                DEFAULT_FORCE_DEADBAND_N, 120.0f}),
+          AdmittanceController({DEFAULT_ADMITTANCE_STIFFNESS_N_PER_PERCENT,
+                                DEFAULT_ADMITTANCE_NATURAL_FREQUENCY_HZ,
+                                DEFAULT_FORCE_DEADBAND_N, 120.0f})}
+{
+    for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        reference_percent_[i] = 0.0f;
+        reference_start_percent_[i] = 0.0f;
+        reference_target_percent_[i] = 0.0f;
+        command_percent_[i] = 0.0f;
+        command_ticks_[i] = Hand::percentToServoPos(static_cast<Finger>(i), 0.0f);
+        actual_ticks_[i] = command_ticks_[i];
+    }
+    for (auto& controller : admittance_) controller.reset(0.0f);
+}
 
-// ============================================================================
-// PUBLIC API
-// ============================================================================
+void HandController::setPose(const GripConfig& grip)
+{
+    for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        startTrajectory(i, static_cast<float>(grip.positionsPercent[i]));
+    }
+    mode_ = ControllerMode::Move;
+}
 
 void HandController::setTargetGrip(GripType grip)
 {
-    // Lookup grip configuration from database
-    if (static_cast<size_t>(grip) >= static_cast<size_t>(GripType::Count)) {
-        HAND_DEBUG("Invalid grip type: %d", static_cast<int>(grip));
-        return;
-    }
-    
-    const GripConfig& grip_cfg = GripDatabase[static_cast<size_t>(grip)];
-    
-    uint32_t now = HAL_GetTick();
-    
-    // Setup trajectory for all 6 fingers with individual speed control
-    for (size_t i = 0; i < FINGER_COUNT; ++i) {
-        start_pos_[i] = current_pos_[i];
-        target_pos_[i] = grip_cfg.positions[i];
-        start_time_ms_[i] = now;
-        
-        // Calculate individual duration based on distance and configured maxSpeed
-        uint16_t delta = (target_pos_[i] > start_pos_[i]) 
-                         ? (target_pos_[i] - start_pos_[i]) 
-                         : (start_pos_[i] - target_pos_[i]);
-        
-        uint16_t max_speed_deg_per_sec = Hand::getAxisConfig(side_, static_cast<Finger>(i)).maxSpeed;  // degrees per second
-        
-        // Handle edge cases
-        if (delta == 0) {
-            duration_ms_[i] = 0;
-            moving_[i] = false;
-        } else if (max_speed_deg_per_sec == 0) {
-            // Fallback to default speed if maxSpeed is zero
-            duration_ms_[i] = (delta * 1000) / 1000;  // 1000 units/s default
-            moving_[i] = true;
-            HAND_DEBUG("Warning: maxSpeed=0 for finger %d, using default 1000 units/s", i);
-        } else {
-            // Convert degrees/s to servo units/s: 360° = 4095 units
-            // units/s = deg/s * (4095 / 360)
-            uint32_t max_speed_units_per_sec = (static_cast<uint32_t>(max_speed_deg_per_sec) * 4095) / 360;
-            
-            // Normal case: duration = distance / speed
-            duration_ms_[i] = (static_cast<uint32_t>(delta) * 1000) / max_speed_units_per_sec;
-            moving_[i] = true;
-        }
-    }
-    
-    HAND_DEBUG("Grip set: %s (side=%d, per-finger speeds)", 
-               grip_cfg.name.data(), static_cast<int>(side_));
+    if (static_cast<size_t>(grip) >= static_cast<size_t>(GripType::Count)) return;
+    setPose(GripDatabase[static_cast<size_t>(grip)]);
 }
 
-void HandController::setTargetGripWithPercent(GripType grip, const uint16_t* perFingerPercent)
+void HandController::setTargetGripWithForce(GripType grip, float force_newton)
 {
-    if (static_cast<size_t>(grip) >= static_cast<size_t>(GripType::Count)) {
-        HAND_DEBUG("Invalid grip type: %d", static_cast<int>(grip));
-        return;
-    }
-    const GripConfig& grip_cfg = GripDatabase[static_cast<size_t>(grip)];
-
-    uint32_t now = HAL_GetTick();
-
-    for (size_t i = 0; i < FINGER_COUNT; ++i) {
-        start_pos_[i] = current_pos_[i];
-        target_pos_[i] = grip_cfg.positions[i];
-        start_time_ms_[i] = now;
-
-        uint16_t delta = (target_pos_[i] > start_pos_[i]) ? (target_pos_[i] - start_pos_[i]) : (start_pos_[i] - target_pos_[i]);
-
-        uint16_t pct = (perFingerPercent) ? perFingerPercent[i] : 100;
-        uint16_t axis_max_deg_s = Hand::getAxisConfig(side_, static_cast<Finger>(i)).maxSpeed;
-        uint32_t use_deg_s = (axis_max_deg_s == 0) ? 1000 : ((static_cast<uint32_t>(axis_max_deg_s) * pct) / 100);
-
-        uint32_t max_speed_units_per_sec = (use_deg_s * 4095) / 360;
-        if (delta == 0) { duration_ms_[i] = 0; moving_[i] = false; }
-        else if (max_speed_units_per_sec == 0) { duration_ms_[i] = (delta * 1000) / 1000; moving_[i] = true; }
-        else { duration_ms_[i] = (static_cast<uint32_t>(delta) * 1000) / max_speed_units_per_sec; moving_[i] = true; }
-    }
-
-    HAND_DEBUG("Grip set with per-finger percent: %s (side=%d)", grip_cfg.name.data(), static_cast<int>(side_));
+    if (static_cast<size_t>(grip) >= static_cast<size_t>(GripType::Count)) return;
+    if (!setForceAll(force_newton)) return;
+    setPose(GripDatabase[static_cast<size_t>(grip)]);
 }
 
-void HandController::setSingleFingerPosition(Finger finger, uint16_t position, uint16_t speed_deg_per_s)
+bool HandController::setSingleFingerPercent(Finger finger, float percent)
 {
-    size_t i = static_cast<size_t>(finger);
-    if (i >= FINGER_COUNT) return;
-    uint32_t now = HAL_GetTick();
-    start_pos_[i] = current_pos_[i];
-    target_pos_[i] = position;
-    start_time_ms_[i] = now;
+    const size_t index = static_cast<size_t>(finger);
+    if (index >= FINGER_COUNT || !std::isfinite(percent) || percent < 0.0f || percent > 100.0f) {
+        return false;
+    }
+    startTrajectory(index, percent);
+    mode_ = ControllerMode::Position;
+    return true;
+}
 
-    uint16_t delta = (target_pos_[i] > start_pos_[i]) ? (target_pos_[i] - start_pos_[i]) : (start_pos_[i] - target_pos_[i]);
-    uint32_t use_deg_s = speed_deg_per_s;
-    if (use_deg_s == 0) use_deg_s = Hand::getAxisConfig(side_, finger).maxSpeed;
-    if (use_deg_s == 0) use_deg_s = 1000;
-    uint32_t max_speed_units_per_sec = (use_deg_s * 4095) / 360;
-    if (delta == 0) { duration_ms_[i] = 0; moving_[i] = false; }
-    else { duration_ms_[i] = (static_cast<uint32_t>(delta) * 1000) / max_speed_units_per_sec; moving_[i] = true; }
+bool HandController::setSingleFingerPercentWithForce(Finger finger, float percent, float force_newton)
+{
+    const size_t index = static_cast<size_t>(finger);
+    if (index < CONTROLLED_FINGER_FIRST || index > CONTROLLED_FINGER_LAST) return false;
+    if (!setForce(finger, force_newton)) return false;
+    return setSingleFingerPercent(finger, percent);
+}
+
+bool HandController::setForceAll(float force_newton)
+{
+    if (!std::isfinite(force_newton) || force_newton < 0.0f || force_newton > DEFAULT_FORCE_LIMIT_N) {
+        return false;
+    }
+    for (size_t i = CONTROLLED_FINGER_FIRST; i <= CONTROLLED_FINGER_LAST; ++i) {
+        force_setpoint_n_[i] = force_newton;
+    }
+    return true;
+}
+
+bool HandController::setForce(Finger finger, float force_newton)
+{
+    const size_t index = static_cast<size_t>(finger);
+    if (index < CONTROLLED_FINGER_FIRST || index > CONTROLLED_FINGER_LAST ||
+        !std::isfinite(force_newton) || force_newton < 0.0f || force_newton > DEFAULT_FORCE_LIMIT_N) {
+        return false;
+    }
+    force_setpoint_n_[index] = force_newton;
+    return true;
+}
+
+void HandController::setSpeed(uint16_t speed_deg_per_s)
+{
+    speed_deg_per_second_ = std::clamp<uint16_t>(speed_deg_per_s, 1U, 270U);
+}
+
+void HandController::setAdmittanceEnabled(bool enabled)
+{
+    admittance_enabled_ = enabled;
+    output_pending_ = true;
+    for (size_t i = CONTROLLED_FINGER_FIRST; i <= CONTROLLED_FINGER_LAST; ++i) {
+        admittance_[i - CONTROLLED_FINGER_FIRST].setEnabled(enabled);
+        admittance_[i - CONTROLLED_FINGER_FIRST].reset(reference_percent_[i]);
+        command_percent_[i] = reference_percent_[i];
+    }
+    mode_ = enabled ? ControllerMode::Admittance : ControllerMode::Position;
 }
 
 void HandController::stopImmediate()
 {
-    // Stop all movements immediately
+    admittance_enabled_ = false;
+    output_pending_ = true;
     for (size_t i = 0; i < FINGER_COUNT; ++i) {
         moving_[i] = false;
-        target_pos_[i] = current_pos_[i];
+        reference_start_percent_[i] = reference_percent_[i];
+        reference_target_percent_[i] = reference_percent_[i];
+        trajectory_elapsed_ms_[i] = 0;
+        trajectory_duration_ms_[i] = 0;
+        command_percent_[i] = reference_percent_[i];
     }
-    // Command servos to hold current positions
-    std::array<uint8_t, FINGER_COUNT> ids{};
-    std::array<uint16_t, FINGER_COUNT> positions{};
-    std::array<uint16_t, FINGER_COUNT> times{};
-    for (size_t i = 0; i < FINGER_COUNT; ++i) {
-        ids[i] = Hand::getServoID(side_, static_cast<Finger>(i));
-        positions[i] = Hand::mapToServoPos(side_, static_cast<Finger>(i), current_pos_[i]);
-        times[i] = MICROSTEP_TIME;
+    for (auto& controller : admittance_) {
+        controller.setEnabled(false);
+        controller.reset(0.0f);
     }
-    bus_.syncWritePositions(ids.data(), positions.data(), times.data(), FINGER_COUNT);
+    mode_ = ControllerMode::Hold;
 }
 
 void HandController::holdCurrent()
 {
-    // Similar to stopImmediate but keep motors in hold (no state change beyond stopping)
     stopImmediate();
 }
 
-/**
- * @brief Schedule a target grip for this hand.
- *
- * Sets up start/target positions and timing for all fingers. Each finger
- * moves at its configured maxSpeed from AxisSettings. Movement is applied
- * non-blocking via the `update()` method with smoothstep interpolation.
- * 
- * @param grip Target `GripType`
- */
-
-void HandController::update()
+bool HandController::isMoving() const
 {
-    uint32_t now = HAL_GetTick();
-    
-    // ========================================================================
-    // PART 1: TRAJECTORY INTERPOLATION + MOVEMENT
-    // ========================================================================
-    
+    for (bool moving : moving_) {
+        if (moving) return true;
+    }
+    return false;
+}
+
+void HandController::startTrajectory(size_t index, float target_percent)
+{
+    if (index >= FINGER_COUNT) return;
+    output_pending_ = true;
+    target_percent = std::clamp(target_percent, 0.0f, 100.0f);
+    reference_start_percent_[index] = reference_percent_[index];
+    reference_target_percent_[index] = target_percent;
+    trajectory_elapsed_ms_[index] = 0;
+
+    const float distance_percent = std::fabs(target_percent - reference_percent_[index]);
+    const float degrees_per_percent = 180.0f / 100.0f;
+    const float speed = std::max(1.0f, static_cast<float>(speed_deg_per_second_));
+    trajectory_duration_ms_[index] = static_cast<uint32_t>(
+        std::max(1.0f, distance_percent * degrees_per_percent * 1000.0f / speed));
+    moving_[index] = distance_percent > 0.01f;
+    if (!moving_[index]) {
+        reference_percent_[index] = target_percent;
+        command_percent_[index] = target_percent;
+        if (index >= CONTROLLED_FINGER_FIRST && index <= CONTROLLED_FINGER_LAST) {
+            admittance_[index - CONTROLLED_FINGER_FIRST].reset(target_percent);
+        }
+    }
+}
+
+float HandController::forceForFinger(size_t index, const FSR_Snapshot& fsr) const
+{
+    if (index >= FSR400_SENSOR_COUNT) return 0.0f;
+    return fsr.force_newton[index];
+}
+
+void HandController::update(const FSR_Snapshot& fsr)
+{
+    ++sequence_;
+    fault_flags_ &= ~(FAULT_FORCE_UNREACHED | FAULT_EXTENSION_LIMIT);
+
     bool any_moving = false;
-    std::array<uint8_t, FINGER_COUNT> servo_ids{};
-    std::array<uint16_t, FINGER_COUNT> positions{};
-    std::array<uint16_t, FINGER_COUNT> times{};
-    
+
     for (size_t i = 0; i < FINGER_COUNT; ++i) {
-        // Get servo ID for this finger
-        servo_ids[i] = Hand::getServoID(side_, static_cast<Finger>(i));
-        
-        // Smoothstep interpolation for smooth S-curve movement
         if (moving_[i]) {
-            uint32_t elapsed = now - start_time_ms_[i];
-            
-            // Check if movement is complete
-            if (duration_ms_[i] == 0 || elapsed >= duration_ms_[i]) {
-                current_pos_[i] = target_pos_[i];
+            trajectory_elapsed_ms_[i] += TICK_MS;
+            if (trajectory_elapsed_ms_[i] >= trajectory_duration_ms_[i]) {
+                reference_percent_[i] = reference_target_percent_[i];
                 moving_[i] = false;
+                if (i >= CONTROLLED_FINGER_FIRST && i <= CONTROLLED_FINGER_LAST) {
+                    admittance_[i - CONTROLLED_FINGER_FIRST].reset(reference_percent_[i]);
+                }
             } else {
-                // Use smoothstep interpolation for S-curve
-                current_pos_[i] = interpolatePosition(i, now);
+                const float t = static_cast<float>(trajectory_elapsed_ms_[i]) /
+                                static_cast<float>(trajectory_duration_ms_[i]);
+                const float alpha = smoothstep(t);
+                reference_percent_[i] = reference_start_percent_[i] +
+                                        alpha * (reference_target_percent_[i] - reference_start_percent_[i]);
                 any_moving = true;
             }
         }
-        
-        // Map logical position (0=open, 4095=closed) to physical servo position
-        // This accounts for different zero positions and rotation directions
-        positions[i] = Hand::mapToServoPos(side_, static_cast<Finger>(i), current_pos_[i]);
-        // Use microstep time for smooth servo execution
-        times[i] = MICROSTEP_TIME;
-    }
-    
-    // Send positions to servos (fire and forget, non-blocking)
-    if (any_moving || (now % 500) == 0) {  // Send updates while moving, or every 500ms to maintain position
-        bus_.syncWritePositions(servo_ids.data(), positions.data(), times.data(), FINGER_COUNT);
+
+        float command = reference_percent_[i];
+        if (i >= CONTROLLED_FINGER_FIRST && i <= CONTROLLED_FINGER_LAST &&
+            admittance_enabled_ && !moving_[i]) {
+            const size_t regulator = i - CONTROLLED_FINGER_FIRST;
+            measured_force_n_[i] = forceForFinger(i, fsr);
+            command = admittance_[regulator].step(reference_percent_[i], force_setpoint_n_[i],
+                                                  measured_force_n_[i], CONTROL_DT_S);
+            if (command >= 99.99f && measured_force_n_[i] + 0.05f < force_setpoint_n_[i]) {
+                fault_flags_ |= FAULT_FORCE_UNREACHED;
+            }
+            if (command <= 0.01f && measured_force_n_[i] > force_setpoint_n_[i] + 0.05f) {
+                fault_flags_ |= FAULT_EXTENSION_LIMIT;
+            }
+        } else if (i < FSR400_SENSOR_COUNT) {
+            measured_force_n_[i] = forceForFinger(i, fsr);
+        }
+
+        command_percent_[i] = std::clamp(command, 0.0f, 100.0f);
+        command_ticks_[i] = Hand::percentToServoPos(static_cast<Finger>(i), command_percent_[i]);
+        any_moving = any_moving || moving_[i] ||
+                     (i >= CONTROLLED_FINGER_FIRST && admittance_enabled_ &&
+                      std::fabs(admittance_[i - CONTROLLED_FINGER_FIRST].velocity()) > 0.01f);
     }
 
-    // Blue LED heartbeat while any servo is moving: toggle every 100ms.
-    if (any_moving) {
-        if ((now - led_last_toggle_ms) >= LED_TOGGLE_MS) {
-            BSP_LED_Toggle(LED_BLUE);
-            led_last_toggle_ms = now;
-        }
-    } else {
-        // Ensure LED is off when idle
-        BSP_LED_Off(LED_BLUE);
-    }
-    
-    // Poll the bus state machine (non-blocking). Telemetry/admittance logic removed.
-    bus_.poll();
+    if (admittance_enabled_) mode_ = ControllerMode::Admittance;
+    else if (any_moving) mode_ = ControllerMode::Move;
+
+    output_pending_ = output_pending_ || any_moving || admittance_enabled_;
 }
 
-/**
- * @brief Periodic non-blocking update.
- *
- * Performs trajectory interpolation, sends sync write packets to servos and
- * advances the round-robin telemetry state machine. It is called through the
- * TIM6 update callback at the 500 Hz control rate.
- */
+bool HandController::copyOutputFrame(uint8_t* ids, uint16_t* positions, uint16_t* times,
+                                     size_t count) const
+{
+    if (ids == nullptr || positions == nullptr || times == nullptr || count < FINGER_COUNT) return false;
+    for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        ids[i] = Hand::getServoID(static_cast<Finger>(i));
+        positions[i] = command_ticks_[i];
+        times[i] = MICROSTEP_TIME_MS;
+    }
+    return true;
+}
 
-// ============================================================================
-// PRIVATE HELPERS
-// ============================================================================
+void HandController::setActualFeedback(Finger finger, uint16_t position, int32_t current_mA,
+                                       uint32_t now_ms)
+{
+    const size_t index = static_cast<size_t>(finger);
+    if (index >= FINGER_COUNT) return;
+    actual_ticks_[index] = position;
+    current_mA_[index] = current_mA;
+    feedback_time_ms_[index] = now_ms;
+}
+
+void HandController::setActualCurrent(Finger finger, int32_t current_mA, uint32_t now_ms)
+{
+    const size_t index = static_cast<size_t>(finger);
+    if (index >= FINGER_COUNT) return;
+    current_mA_[index] = current_mA;
+    feedback_time_ms_[index] = now_ms;
+}
+
+void HandController::getStatus(ControllerStatus* status) const
+{
+    if (status == nullptr) return;
+    status->mode = mode_;
+    status->sequence = sequence_;
+    status->speedDegPerSecond = speed_deg_per_second_;
+    status->torqueLimitPercent = torque_limit_percent_;
+    status->faultFlags = fault_flags_;
+    for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        status->referencePercent[i] = reference_percent_[i];
+        status->commandPercent[i] = command_percent_[i];
+        status->actualPercent[i] = Hand::servoPosToPercent(static_cast<Finger>(i), actual_ticks_[i]);
+        status->targetTicks[i] = Hand::percentToServoPos(static_cast<Finger>(i), reference_target_percent_[i]);
+        status->commandTicks[i] = command_ticks_[i];
+        status->actualTicks[i] = actual_ticks_[i];
+        status->currentMilliamp[i] = current_mA_[i];
+        status->forceSetpoint[i] = force_setpoint_n_[i];
+        status->forceMeasured[i] = measured_force_n_[i];
+    }
+}
 
 float HandController::smoothstep(float t)
 {
-    // Clamp to [0, 1]
-    if (t <= 0.0f) return 0.0f;
-    if (t >= 1.0f) return 1.0f;
-    
-    // Cubic smoothstep: 3t² - 2t³ -> S-Curve easing
+    t = std::clamp(t, 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
 }
-
-/**
- * @brief Cubic smoothstep easing function.
- * @param t Normalized time in [0,1]
- * @return float Interpolation factor
- */
-
-uint16_t HandController::interpolatePosition(size_t finger_idx, uint32_t now)
-{
-    if (finger_idx >= FINGER_COUNT) return 0;
-    
-    // Calculate normalized time [0.0, 1.0]
-    uint32_t elapsed = now - start_time_ms_[finger_idx];
-    float t = static_cast<float>(elapsed) / static_cast<float>(duration_ms_[finger_idx]);
-    
-    // Apply smoothstep interpolation
-    float alpha = smoothstep(t);
-    
-    // Linear interpolation with smoothstep easing
-    float start = static_cast<float>(start_pos_[finger_idx]);
-    float target = static_cast<float>(target_pos_[finger_idx]);
-    float pos = start + alpha * (target - start);
-    
-    // Clamp to valid range [0, 4095]
-    if (pos < 0.0f) pos = 0.0f;
-    if (pos > 4095.0f) pos = 4095.0f;
-    
-    return static_cast<uint16_t>(pos);
-}
-
-/**
- * @brief Compute interpolated servo position for a finger.
- * @param finger_idx Finger index (0..FINGER_COUNT-1)
- * @param now Current time (HAL_GetTick())
- * @return uint16_t Servo position in native units (0..4095)
- */
-
-// telemetry/admittance helpers removed
-
-/**
- * @brief Placeholder for future AI-based grasp adjustment.
- *
- * Analyzes measured current for contact/slip detection and may modify
- * trajectories in future iterations.
- * @param finger_idx Finger index
- * @param current Measured current in mA
- */
 
 } // namespace HandControl

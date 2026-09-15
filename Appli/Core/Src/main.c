@@ -74,7 +74,7 @@ TIM_HandleTypeDef htim6;
 
 /* USER CODE BEGIN PV */
 // VCP RX DMA circular buffer (non-cacheable for DMA coherency)
-#define VCP_RX_BUF_SIZE 64
+#define VCP_RX_BUF_SIZE 256
 __attribute__((section(".noncacheable"), aligned(32))) 
 static uint8_t vcp_rx_dma_buffer[VCP_RX_BUF_SIZE];
 static uint32_t vcp_rx_last_pos = 0;
@@ -180,17 +180,27 @@ int main(void)
     as5600_update();
 #endif
 
-    // Process VCP RX from DMA circular buffer
-    uint32_t current_pos = VCP_RX_BUF_SIZE - __HAL_DMA_GET_COUNTER(hlpuart1.hdmarx);
+    // Process VCP RX from a restarted normal DMA block. GPDMA on STM32N6
+    // uses linked-list circular mode for ADC, but LPUART RX is a normal node.
+    const uint32_t remaining = __HAL_DMA_GET_COUNTER(hlpuart1.hdmarx);
+    const uint8_t block_complete = (remaining == 0U) ? 1U : 0U;
+    const uint32_t current_pos = block_complete
+                               ? VCP_RX_BUF_SIZE
+                               : (VCP_RX_BUF_SIZE - remaining);
     while (vcp_rx_last_pos != current_pos) {
       // D-Cache invalidate for this byte (ensure fresh data from DMA)
       SCB_InvalidateDCache_by_Addr((uint32_t*)&vcp_rx_dma_buffer[vcp_rx_last_pos], 1);
       commander_bridge_feed_byte(vcp_rx_dma_buffer[vcp_rx_last_pos]);
       vcp_rx_last_pos = (vcp_rx_last_pos + 1) % VCP_RX_BUF_SIZE;
     }
+    if (block_complete)
+    {
+      vcp_rx_last_pos = 0;
+      (void)HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);
+    }
     
-    // Process complete commands from SerialCommander
-    commander_bridge_process();
+    // Process commands, bus work and queued VCP responses from main context.
+    hand_bridge_service();
     
     /* USER CODE END WHILE */
 
@@ -290,7 +300,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Channel = ADC_CHANNEL_16;
   sConfig.Rank = ADC_REGULAR_RANK_3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
@@ -299,7 +309,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_13;
+  sConfig.Channel = ADC_CHANNEL_11;
   sConfig.Rank = ADC_REGULAR_RANK_4;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
@@ -308,7 +318,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_16;
+  sConfig.Channel = ADC_CHANNEL_13;
   sConfig.Rank = ADC_REGULAR_RANK_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
@@ -740,6 +750,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   {
     // This callback follows the ADC/GPDMA transfer started by TIM6 TRGO.
     FSR_Update();
+    hand_bridge_update();
   }
 }
 
@@ -747,8 +758,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if ((htim != NULL) && (htim->Instance == TIM6))
   {
-    // Run both hand controllers directly on the TIM6 update event.
-    hand_bridge_update();
+    // TIM6 is the ADC trigger. The control update runs after the complete ADC scan.
   }
 }
 

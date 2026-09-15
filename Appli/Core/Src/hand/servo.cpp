@@ -215,7 +215,9 @@ void ServoBus::poll()
             
         case BusState::DATA_READY:
         case BusState::TIMEOUT:
-            // User must call resetState() after consuming result
+            // Runtime callers can recover without leaving the bus latched.
+            port_.abortRx();
+            state_ = BusState::IDLE;
             break;
     }
     
@@ -279,6 +281,17 @@ bool ServoBus::writeRegister(uint8_t id, uint8_t reg, const uint8_t* data, uint8
     return true;
 }
 
+bool ServoBus::writeTorqueLimit(uint8_t id, uint16_t percent)
+{
+    if (percent > 100U) percent = 100U;
+    const uint16_t raw = static_cast<uint16_t>(percent * 10U);
+    const uint8_t data[2] = {
+        static_cast<uint8_t>(raw & 0xFFU),
+        static_cast<uint8_t>((raw >> 8U) & 0xFFU)
+    };
+    return writeRegister(id, static_cast<uint8_t>(Reg::TorqueLimit), data, 2);
+}
+
 /**
  * @brief Write a register to a single servo (non-blocking).
  */
@@ -295,6 +308,7 @@ bool ServoBus::startReadCurrent(uint8_t id)
     // For Current (2 bytes): base=6 + data=2 = 8 bytes
     expected_rx_len_ = 6 + 2;
     last_read_id_ = id;
+    last_read_reg_ = Reg::Current;
     
     // Step 2: Invalidate D-Cache for RX buffer BEFORE starting DMA
     SCB_InvalidateDCache_by_Addr((uint32_t*)rx_buf_, expected_rx_len_);
@@ -325,6 +339,28 @@ bool ServoBus::startReadCurrent(uint8_t id)
     return true;
 }
 
+bool ServoBus::startReadPosition(uint8_t id)
+{
+    if (state_ != BusState::IDLE) return false;
+
+    expected_rx_len_ = 6 + 2;
+    last_read_id_ = id;
+    last_read_reg_ = Reg::PosRead;
+
+    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(rx_buf_), expected_rx_len_);
+    if (!port_.receiveDMA(rx_buf_, expected_rx_len_)) return false;
+
+    const size_t tx_len = buildReadPacket(id, static_cast<uint8_t>(Reg::PosRead), 2, tx_buf_);
+    if (tx_len == 0 || !port_.transmitDMA(tx_buf_, tx_len)) {
+        port_.abortRx();
+        return false;
+    }
+
+    state_ = BusState::WAIT_RX;
+    operation_start_ms_ = HAL_GetTick();
+    return true;
+}
+
 /**
  * @brief Start asynchronous read of the Current register using RX-before-TX.
  * @param id Servo ID
@@ -333,7 +369,7 @@ bool ServoBus::startReadCurrent(uint8_t id)
 
 std::optional<int32_t> ServoBus::getReadResult()
 {
-    if (state_ != BusState::DATA_READY) {
+    if (state_ != BusState::DATA_READY || last_read_reg_ != Reg::Current) {
         return std::nullopt;
     }
 
@@ -344,8 +380,20 @@ std::optional<int32_t> ServoBus::getReadResult()
     // Datasheet: 1 unit = 6.5 mA -> multiply by 6.5
     // Avoid floats: 6.5 = 13/2 => mA = raw * 13 / 2
     int32_t mA = (static_cast<int32_t>(raw) * 13) / 2;
-
+    state_ = BusState::IDLE;
     return mA;
+}
+
+std::optional<uint16_t> ServoBus::getPositionResult()
+{
+    if (state_ != BusState::DATA_READY || last_read_reg_ != Reg::PosRead) {
+        return std::nullopt;
+    }
+
+    const uint16_t position = static_cast<uint16_t>(rx_buf_[5] |
+                                                     (static_cast<uint16_t>(rx_buf_[6]) << 8U));
+    state_ = BusState::IDLE;
+    return position;
 }
 
 /**
@@ -404,7 +452,7 @@ bool ServoBus::validateResponse(uint8_t expected_id, uint8_t data_len)
     
     // Verify checksum
     // Checksum is calculated on: ID + Length + Error + Data...
-    uint8_t calc_cs = calcChecksum(&rx_buf_[2], 2 + data_len);
+    uint8_t calc_cs = calcChecksum(&rx_buf_[2], 3 + data_len);
     uint8_t recv_cs = rx_buf_[5 + data_len];
     
     if (calc_cs != recv_cs) {

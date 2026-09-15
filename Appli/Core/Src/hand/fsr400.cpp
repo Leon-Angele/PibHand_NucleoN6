@@ -1,17 +1,30 @@
 #include "hand/fsr400.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
 namespace {
 
 constexpr uint16_t FSR_ADC_MAX = 4095U;
 constexpr float FSR_VREF = 3.3f;
+constexpr float FSR_MEASURING_RESISTOR_OHM = 47000.0f;
 constexpr float FSR_DEFAULT_FILTER_ALPHA = 0.2f;
+constexpr float FSR_MAX_N = 20.0f;
 
 __attribute__((section(".noncacheable"), aligned(32)))
-static volatile uint16_t fsr_raw[5] = {};
+static volatile uint16_t fsr_raw[FSR400_SENSOR_COUNT] = {};
 
-static volatile float fsr_filtered[5] = {};
+static volatile float fsr_filtered[FSR400_SENSOR_COUNT] = {};
+static volatile float fsr_force[FSR400_SENSOR_COUNT] = {};
+static float fsr_tare_conductance_us[FSR400_SENSOR_COUNT] = {};
 static volatile float fsr_filter_alpha = FSR_DEFAULT_FILTER_ALPHA;
-static bool fsr_filter_initialized = false;
+static volatile uint32_t fsr_sequence = 0U;
+static volatile bool fsr_filter_initialized = false;
+static volatile bool fsr_tared = false;
+static volatile bool fsr_saturated = false;
+static uint16_t startup_tare_samples = 0U;
+static float startup_tare_sum[FSR400_SENSOR_COUNT] = {};
 
 bool is_valid_index(uint8_t index)
 {
@@ -20,13 +33,37 @@ bool is_valid_index(uint8_t index)
 
 float clamp_alpha(float alpha)
 {
-    if (alpha < 0.0f) {
-        return 0.0f;
+    return std::clamp(alpha, 0.0f, 1.0f);
+}
+
+float adc_to_conductance_us(float adc)
+{
+    if (adc <= 0.0f) return 0.0f;
+    if (adc >= static_cast<float>(FSR_ADC_MAX)) return 1000000.0f;
+
+    /* FSR is connected to 3V3 and the 47 kOhm resistor to ground. */
+    const float resistance = FSR_MEASURING_RESISTOR_OHM *
+                             (static_cast<float>(FSR_ADC_MAX) - adc) / adc;
+    if (resistance <= 0.0f) return 1000000.0f;
+    return 1000000.0f / resistance;
+}
+
+float effective_conductance_to_force(float conductance_us)
+{
+    /* Central approximation of the FSR400 datasheet curve. */
+    constexpr float conductance[] = {0.0f, 9.0f, 19.0f, 32.0f, 54.0f, 141.0f, 284.0f, 554.0f};
+    constexpr float force[]       = {0.0f, 0.2f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 20.0f};
+    constexpr size_t count = sizeof(force) / sizeof(force[0]);
+
+    if (conductance_us <= conductance[0]) return 0.0f;
+    for (size_t i = 1; i < count; ++i) {
+        if (conductance_us <= conductance[i]) {
+            const float span = conductance[i] - conductance[i - 1];
+            const float ratio = span > 0.0f ? (conductance_us - conductance[i - 1]) / span : 0.0f;
+            return force[i - 1] + ratio * (force[i] - force[i - 1]);
+        }
     }
-    if (alpha > 1.0f) {
-        return 1.0f;
-    }
-    return alpha;
+    return FSR_MAX_N;
 }
 
 } // namespace
@@ -35,66 +72,123 @@ extern "C" {
 
 bool FSR_Start(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim)
 {
-    if ((hadc == nullptr) || (htim == nullptr)) {
-        return false;
-    }
+    if ((hadc == nullptr) || (htim == nullptr)) return false;
 
     fsr_filter_initialized = false;
-    for (uint8_t index = 0; index < FSR400_SENSOR_COUNT; ++index) {
-        fsr_raw[index] = 0U;
-        fsr_filtered[index] = 0.0f;
+    fsr_tared = false;
+    fsr_saturated = false;
+    fsr_sequence = 0U;
+    startup_tare_samples = 0U;
+    for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
+        fsr_raw[i] = 0U;
+        fsr_filtered[i] = 0.0f;
+        fsr_force[i] = 0.0f;
+        fsr_tare_conductance_us[i] = 0.0f;
+        startup_tare_sum[i] = 0.0f;
     }
 
-    // HAL uses a const uint32_t pointer for the DMA destination even though
-    // the peripheral writes to it. The buffer remains volatile and halfword-sized.
-    const void *dma_address = const_cast<uint16_t *>(fsr_raw);
-    const uint32_t *dma_buffer = static_cast<const uint32_t *>(dma_address);
-    if (HAL_ADC_Start_DMA(hadc, dma_buffer, FSR400_SENSOR_COUNT) != HAL_OK) {
+    if (HAL_ADC_Start_DMA(hadc, reinterpret_cast<uint32_t*>(const_cast<uint16_t*>(fsr_raw)),
+                          FSR400_SENSOR_COUNT) != HAL_OK) {
         return false;
     }
 
-    if (HAL_TIM_Base_Start_IT(htim) != HAL_OK) {
+    /* TIM6 remains the ADC trigger; its IRQ is not required for control. */
+    if (HAL_TIM_Base_Start(htim) != HAL_OK) {
         (void)HAL_ADC_Stop_DMA(hadc);
         return false;
     }
-
     return true;
 }
 
 void FSR_Update(void)
 {
+    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(const_cast<uint16_t*>(fsr_raw)), 32U);
     const float alpha = clamp_alpha(fsr_filter_alpha);
-
     if (!fsr_filter_initialized) {
-        for (uint8_t index = 0; index < FSR400_SENSOR_COUNT; ++index) {
-            fsr_filtered[index] = static_cast<float>(fsr_raw[index]);
+        for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
+            fsr_filtered[i] = static_cast<float>(fsr_raw[i]);
         }
         fsr_filter_initialized = true;
-        return;
+    } else {
+        for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
+            const float sample = static_cast<float>(fsr_raw[i]);
+            fsr_filtered[i] += alpha * (sample - fsr_filtered[i]);
+        }
     }
 
-    for (uint8_t index = 0; index < FSR400_SENSOR_COUNT; ++index) {
-        const float sample = static_cast<float>(fsr_raw[index]);
-        fsr_filtered[index] += alpha * (sample - fsr_filtered[index]);
+    bool saturated = false;
+    for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
+        const float conductance = adc_to_conductance_us(fsr_filtered[i]);
+        if (!fsr_tared && startup_tare_samples < 250U) {
+            startup_tare_sum[i] += conductance;
+        }
+        const float effective = std::max(conductance - fsr_tare_conductance_us[i], 0.0f);
+        fsr_force[i] = effective_conductance_to_force(effective);
+        saturated = saturated || (fsr_filtered[i] >= 4080.0f);
     }
+    if (!fsr_tared && startup_tare_samples < 250U) {
+        ++startup_tare_samples;
+        if (startup_tare_samples >= 250U) {
+            for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
+                fsr_tare_conductance_us[i] = startup_tare_sum[i] / 250.0f;
+            }
+            fsr_tared = true;
+        }
+    }
+    fsr_saturated = saturated;
+    ++fsr_sequence;
+}
+
+bool FSR_Tare(void)
+{
+    if (!fsr_filter_initialized) return false;
+    for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
+        fsr_tare_conductance_us[i] = adc_to_conductance_us(fsr_filtered[i]);
+    }
+    fsr_tared = true;
+    return true;
+}
+
+bool FSR_IsTared(void)
+{
+    return fsr_tared;
+}
+
+void FSR_GetSnapshot(FSR_Snapshot *snapshot)
+{
+    if (snapshot == nullptr) return;
+    uint32_t first_sequence;
+    uint32_t last_sequence;
+    do {
+        first_sequence = fsr_sequence;
+        snapshot->tared = fsr_tared;
+        snapshot->saturated = fsr_saturated;
+        for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
+            snapshot->raw[i] = fsr_raw[i];
+            snapshot->filtered[i] = fsr_filtered[i];
+            snapshot->voltage[i] = (fsr_filtered[i] * FSR_VREF) / static_cast<float>(FSR_ADC_MAX);
+            snapshot->force_newton[i] = fsr_force[i];
+        }
+        last_sequence = fsr_sequence;
+    } while (first_sequence != last_sequence);
+    snapshot->sequence = last_sequence;
 }
 
 uint16_t FSR_GetRaw(uint8_t index)
 {
-    if (!is_valid_index(index)) {
-        return 0U;
-    }
-
-    return fsr_raw[index];
+    return is_valid_index(index) ? fsr_raw[index] : 0U;
 }
 
 float FSR_GetVoltage(uint8_t index)
 {
-    if (!is_valid_index(index)) {
-        return 0.0f;
-    }
+    return is_valid_index(index)
+        ? (fsr_filtered[index] * FSR_VREF) / static_cast<float>(FSR_ADC_MAX)
+        : 0.0f;
+}
 
-    return (fsr_filtered[index] * FSR_VREF) / static_cast<float>(FSR_ADC_MAX);
+float FSR_GetForceNewton(uint8_t index)
+{
+    return is_valid_index(index) ? fsr_force[index] : 0.0f;
 }
 
 void FSR_SetFilterAlpha(float alpha)

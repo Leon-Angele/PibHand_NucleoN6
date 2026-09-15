@@ -1,328 +1,276 @@
 #include "hand/serial_commander.hpp"
 
-/**
- * @file serial_commander.cpp
- * @brief ISR-safe ASCII command parser implementation for hand control.
- * @author Leon Angele
- * @date 2026-05-08
- *
- * Implements a small ring-buffered parser that accepts commands like
- * "G:<Side>:<GripID>" and forwards execution to a registered executor.
- */
-
-#include <cstring>
 #include <cctype>
+#include <cstdlib>
+#include <cstring>
 
 using namespace HandControl;
 
-// ============================================================================
-// VCP UART PORT IMPLEMENTATION
-// ============================================================================
+namespace {
+
+bool equalsIgnoreCase(const char* a, const char* b)
+{
+    while (*a != '\0' && *b != '\0') {
+        if (std::toupper(static_cast<unsigned char>(*a)) !=
+            std::toupper(static_cast<unsigned char>(*b))) return false;
+        ++a;
+        ++b;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+bool parseUnsigned(const char* text, unsigned long& value)
+{
+    if (text == nullptr || *text == '\0') return false;
+    char* end = nullptr;
+    value = std::strtoul(text, &end, 10);
+    return end != text && *end == '\0';
+}
+
+bool parseFloat(const char* text, float& value)
+{
+    if (text == nullptr || *text == '\0') return false;
+    char* end = nullptr;
+    value = std::strtof(text, &end);
+    return end != text && *end == '\0';
+}
+
+size_t split(char* text, char* tokens[], size_t max_tokens)
+{
+    size_t count = 0;
+    char* cursor = text;
+    while (count < max_tokens) {
+        tokens[count++] = cursor;
+        char* separator = std::strchr(cursor, ':');
+        if (separator == nullptr) break;
+        *separator = '\0';
+        cursor = separator + 1;
+    }
+    return count;
+}
+
+} // namespace
 
 PollUartPort::PollUartPort(UART_HandleTypeDef* huart, uint32_t timeout_ms)
     : huart_(huart), timeout_ms_(timeout_ms)
 {
 }
 
-/**
- * @brief Blocking transmit implementation for VCP/debug.
- * @param data Message bytes
- * @param length Byte count
- * @return true on success
- */
 bool PollUartPort::transmitDMA(const uint8_t* data, uint16_t length)
 {
-    // Blocking transmit for VCP (debug output only)
-    HAL_StatusTypeDef ret = HAL_UART_Transmit(huart_, const_cast<uint8_t*>(data), length, timeout_ms_);
-    return (ret == HAL_OK);
+    if (data == nullptr || length == 0U || huart_ == nullptr) return false;
+    return HAL_UART_Transmit(huart_, const_cast<uint8_t*>(data), length, timeout_ms_) == HAL_OK;
 }
 
-// ============================================================================
-// SERIAL COMMANDER IMPLEMENTATION
-// ============================================================================
-
-SerialCommander::SerialCommander(HandControl::ISerialPort& port) noexcept
-: port_(port), executor_(nullptr), rx_head_(0), rx_tail_(0), overflow_flag_(false)
+SerialCommander::SerialCommander(ISerialPort& port) noexcept
+    : port_(port)
 {
 }
 
-/**
- * @brief Construct a new SerialCommander.
- * @param port Reference to an ISerialPort used for responses/transmit
- */
-
-bool SerialCommander::feedByte(uint8_t b) noexcept {
-    // ISR-safe ring buffer push (single producer from ISR)
-    uint16_t head = rx_head_;
-    uint16_t next = (head + 1) % RX_BUF_SIZE;
-    uint16_t tail = rx_tail_; // volatile read
-    if (next == tail) {
-        overflow_flag_ = true; // mark overflow; processCommand will report/clear
+bool SerialCommander::feedByte(uint8_t byte) noexcept
+{
+    const uint16_t head = rx_head_;
+    const uint16_t next = static_cast<uint16_t>((head + 1U) % RX_BUF_SIZE);
+    if (next == rx_tail_) {
+        overflow_flag_ = true;
         return false;
     }
-    rx_buf_[head] = b;
-    rx_head_ = next; // volatile write
+    rx_buf_[head] = byte;
+    rx_head_ = next;
     return true;
 }
 
-/**
- * @brief Push a received byte into the ISR-safe ring buffer.
- * @param b Byte received from UART ISR
- * @return true if accepted, false if buffer full
- */
+void SerialCommander::sendText(const char* text) noexcept
+{
+    if (text == nullptr) return;
+    sendResponse(text, std::strlen(text));
+}
 
-void SerialCommander::processCommand() noexcept {
-    // If overflow, report and clear buffer
+void SerialCommander::sendResponse(const char* msg, size_t len) noexcept
+{
+    if (msg == nullptr || len == 0U) return;
+    if (len >= TX_MESSAGE_SIZE) len = TX_MESSAGE_SIZE - 1U;
+
+    const uint8_t next = static_cast<uint8_t>((tx_head_ + 1U) % TX_QUEUE_DEPTH);
+    if (next == tx_tail_) return;
+    std::memcpy(tx_queue_[tx_head_].data(), msg, len);
+    tx_lengths_[tx_head_] = static_cast<uint16_t>(len);
+    tx_head_ = next;
+}
+
+void SerialCommander::serviceTx() noexcept
+{
+    if (tx_active_) {
+        if (!port_.isTxDone()) return;
+        tx_active_ = false;
+    }
+    if (tx_tail_ == tx_head_) return;
+
+    const uint16_t length = tx_lengths_[tx_tail_];
+    std::memcpy(tx_dma_buffer_.data(), tx_queue_[tx_tail_].data(), length);
+    tx_tail_ = static_cast<uint8_t>((tx_tail_ + 1U) % TX_QUEUE_DEPTH);
+    if (port_.transmitDMA(tx_dma_buffer_.data(), length)) {
+        tx_active_ = true;
+    }
+}
+
+void SerialCommander::processCommand() noexcept
+{
+    serviceTx();
+
     if (overflow_flag_) {
-        const char msg[] = "ERR BUF\n";
-        HAND_DEBUG("ERROR: RX Buffer overflow!");
-        sendResponse(msg, sizeof(msg) - 1);
-        // Drop data: advance tail to head
+        const char response[] = "ERR:QUEUE_FULL\n";
+        sendResponse(response, sizeof(response) - 1U);
         rx_tail_ = rx_head_;
         overflow_flag_ = false;
+        serviceTx();
         return;
     }
 
-    // Extract commands delimited by '\n' or '\r'
     while (rx_tail_ != rx_head_) {
-        size_t available = 0;
-        uint16_t tail = rx_tail_;
-        uint16_t head = rx_head_;
-        if (head >= tail) available = head - tail;
-        else available = RX_BUF_SIZE - (tail - head);
-
-        // Copy up to available or until newline (accept both '\n' and '\r' as line terminator)
-        char cmd[RX_BUF_SIZE];
-        bool found_newline = false;
-        size_t i = 0;
-        for (; i < available && i < (RX_BUF_SIZE - 1); ++i) {
-            uint16_t idx = (tail + (uint16_t)i) % RX_BUF_SIZE;
-            char c = static_cast<char>(rx_buf_[idx]);
-            cmd[i] = c;
-            if (c == '\n' || c == '\r') { found_newline = true; ++i; break; }
-        }
-
-        if (!found_newline) break; // wait for full line
-
-        size_t cmd_len = i;
-        cmd[cmd_len] = '\0';
-
-        // Advance tail by cmd_len
-        rx_tail_ = (tail + static_cast<uint16_t>(cmd_len)) % RX_BUF_SIZE;
-
-        // Trim trailing CR/LF
-        while (cmd_len > 0 && (cmd[cmd_len - 1] == '\n' || cmd[cmd_len - 1] == '\r')) {
-            cmd[--cmd_len] = '\0';
-        }
-
-        // Parse command into structured Command
-        ICommandExecutor::Command cmdObj;
-        if (!parseCommand(reinterpret_cast<uint8_t*>(cmd), cmd_len, cmdObj)) {
-            HAND_DEBUG("CMD ERROR: Invalid syntax");
-            const char msg[] = "ERR SYNTAX\n";
-            sendResponse(msg, sizeof(msg) - 1);
-            continue;
-        }
-
-        if (!executor_) {
-            const char msg[] = "ERR NOEXEC\n";
-            sendResponse(msg, sizeof(msg) - 1);
-            continue;
-        }
-
-        // Basic validation for GripID and percent ranges
-        if (cmdObj.type == ICommandExecutor::CommandType::GripDefault ||
-            cmdObj.type == ICommandExecutor::CommandType::GripGlobalPct ||
-            cmdObj.type == ICommandExecutor::CommandType::GripPerFingerPct) {
-            uint8_t gripCount = static_cast<uint8_t>(GripType::Count);
-            uint8_t gripId = static_cast<uint8_t>(cmdObj.grip);
-            if (gripId >= gripCount) {
-                const char msg[] = "ERR GRIPID\n";
-                sendResponse(msg, sizeof(msg) - 1);
-                continue;
+        const uint16_t tail = rx_tail_;
+        const uint16_t head = rx_head_;
+        size_t available = head >= tail ? head - tail : RX_BUF_SIZE - (tail - head);
+        char command[MAX_COMMAND_LENGTH]{};
+        bool found_terminator = false;
+        size_t length = 0;
+        while (length < available && length < MAX_COMMAND_LENGTH - 1U) {
+            const char c = static_cast<char>(rx_buf_[(tail + length) % RX_BUF_SIZE]);
+            ++length;
+            if (c == '\n' || c == '\r') {
+                found_terminator = true;
+                break;
             }
-            if (cmdObj.type == ICommandExecutor::CommandType::GripGlobalPct) {
-                if (cmdObj.percent > 100) { const char msg[] = "ERR SPEED\n"; sendResponse(msg, sizeof(msg)-1); continue; }
+            command[length - 1U] = c;
+        }
+        if (!found_terminator) {
+            if (available >= MAX_COMMAND_LENGTH - 1U) {
+                rx_tail_ = static_cast<uint16_t>((tail + available) % RX_BUF_SIZE);
+                const char response[] = "ERR:SYNTAX\n";
+                sendResponse(response, sizeof(response) - 1U);
             }
-            if (cmdObj.type == ICommandExecutor::CommandType::GripPerFingerPct) {
-                for (size_t i=0;i<cmdObj.perFingerPercent.size();++i) {
-                    if (cmdObj.perFingerPercent[i] > 100) { const char msg[] = "ERR SPEED\n"; sendResponse(msg, sizeof(msg)-1); goto next_command; }
-                }
-            }
+            break;
         }
 
-        {
-            bool ok = executor_->executeCommand(cmdObj);
-            if (ok) {
-                const char msg[] = "OK\n";
-                sendResponse(msg, sizeof(msg) - 1);
-            } else {
-                const char msg[] = "ERR EXEC\n";
-                sendResponse(msg, sizeof(msg) - 1);
-            }
+        rx_tail_ = static_cast<uint16_t>((tail + length) % RX_BUF_SIZE);
+        while (rx_tail_ != rx_head_) {
+            const char next = static_cast<char>(rx_buf_[rx_tail_]);
+            if (next != '\r' && next != '\n') break;
+            rx_tail_ = static_cast<uint16_t>((rx_tail_ + 1U) % RX_BUF_SIZE);
         }
-next_command: ;
+        if (length == 1U) continue;
+
+        ICommandExecutor::Command parsed;
+        if (parseCommand(reinterpret_cast<const uint8_t*>(command), length - 1U, parsed) && executor_) {
+            const char* response = executor_->executeCommand(parsed) ? "OK\n" : "ERR:EXEC\n";
+            sendResponse(response, std::strlen(response));
+        } else if (!executor_) {
+            const char response[] = "ERR:NOEXEC\n";
+            sendResponse(response, sizeof(response) - 1U);
+        } else {
+            const char response[] = "ERR:SYNTAX\n";
+            sendResponse(response, sizeof(response) - 1U);
+        }
     }
+    serviceTx();
 }
-
-/**
- * @brief Parse and execute complete ASCII commands from the buffer.
- *
- * Should be called from non-ISR context (main loop). Returns immediately
- * after processing available complete lines.
- */
-
-void SerialCommander::sendResponse(const char* msg, size_t len) noexcept {
-    if (len == 0 || !msg) return;
-    (void) port_.transmitDMA(reinterpret_cast<const uint8_t*>(msg), static_cast<uint16_t>(len));
-}
-
-/**
- * @brief Send a textual response via the configured port.
- * @param msg Pointer to message bytes
- * @param len Length of message
- */
 
 bool SerialCommander::parseCommand(const uint8_t* data, size_t len,
-                                   ICommandExecutor::Command& outCmd) noexcept
+                                   ICommandExecutor::Command& out) noexcept
 {
-    if (!data || len == 0) return false;
+    if (data == nullptr || len == 0U || len >= MAX_COMMAND_LENGTH) return false;
+    char buffer[MAX_COMMAND_LENGTH]{};
+    std::memcpy(buffer, data, len);
+    buffer[len] = '\0';
 
-    // Copy to temporary null-terminated buffer for simple parsing
-    char token[RX_BUF_SIZE];
-    size_t copy_len = (len < (sizeof(token) - 1)) ? len : (sizeof(token) - 1);
-    memcpy(token, data, copy_len);
-    token[copy_len] = '\0';
+    char* tokens[5]{};
+    const size_t count = split(buffer, tokens, 5U);
+    unsigned long integer = 0;
+    float value = 0.0f;
 
-    char* p = token;
-    // Skip leading spaces
-    while (*p && isspace((unsigned char)*p)) ++p;
-    if (!*p) return false;
-
-    // Extract first keyword up to ':'
-    char* kw = p;
-    while (*p && *p != ':') ++p;
-    if (*p) { *p = '\0'; ++p; }
-
-    // Normalize keyword to uppercase for comparisons
-    auto equals_icase = [](const char* a, const char* b)->bool {
-        while (*a && *b) {
-            if (toupper((unsigned char)*a) != toupper((unsigned char)*b)) return false;
-            ++a; ++b;
-        }
-        return *a==0 && *b==0;
-    };
-
-    if (equals_icase(kw, "G")) {
-        // Grip command: G:<Side>:<GripID>[:V:<percent>] or [:Vx:<v0>,...]
-        if (!p || !*p) return false;
-        // Side
-        if (!(*p == '0' || *p == '1')) return false;
-        outCmd.side = (*p == '0') ? Hand::Side::Left : Hand::Side::Right;
-        ++p;
-        if (*p != ':') return false;
-        ++p;
-        // GripID
-        if (!isdigit((unsigned char)*p)) return false;
-        int val = 0;
-        while (*p && isdigit((unsigned char)*p)) { val = val*10 + (*p - '0'); ++p; if (val>255) break; }
-        outCmd.grip = static_cast<GripType>(static_cast<uint8_t>(val));
-
-        // Optional modifiers
-        if (*p == ':') {
-            ++p;
-            // token could be V:... or Vx:...
-            if (toupper((unsigned char)*p) == 'V') {
-                ++p;
-                if (*p == 'x' || *p == 'X') {
-                    ++p; // Vx
-                    if (*p != ':') return false;
-                    ++p;
-                    // parse 6 comma separated percents
-                    for (size_t i=0;i<static_cast<size_t>(Finger::Count);++i) {
-                        if (!isdigit((unsigned char)*p)) return false;
-                        int num = 0;
-                        while (*p && isdigit((unsigned char)*p)) { num = num*10 + (*p - '0'); ++p; if (num>1000) break; }
-                        outCmd.perFingerPercent[i] = static_cast<uint16_t>(num);
-                        if (i < static_cast<size_t>(Finger::Count)-1) {
-                            if (*p != ',') return false;
-                            ++p;
-                        }
-                    }
-                    outCmd.type = ICommandExecutor::CommandType::GripPerFingerPct;
-                } else {
-                    if (*p != ':') return false;
-                    ++p;
-                    // global percent
-                    if (!isdigit((unsigned char)*p)) return false;
-                    int num = 0;
-                    while (*p && isdigit((unsigned char)*p)) { num = num*10 + (*p - '0'); ++p; if (num>1000) break; }
-                    outCmd.percent = static_cast<uint16_t>(num);
-                    outCmd.type = ICommandExecutor::CommandType::GripGlobalPct;
-                }
-            } else {
-                // Unknown modifier - reject
-                return false;
-            }
-        } else {
-            outCmd.type = ICommandExecutor::CommandType::GripDefault;
+    if (equalsIgnoreCase(tokens[0], "POSE")) {
+        if ((count != 2U && count != 3U) || !parseUnsigned(tokens[1], integer) || integer >= static_cast<unsigned long>(GripType::Count)) return false;
+        out.grip = static_cast<GripType>(integer);
+        out.type = ICommandExecutor::CommandType::Pose;
+        if (count == 3U) {
+            if (!parseFloat(tokens[2], value) || value < 0.0f || value > DEFAULT_FORCE_LIMIT_N) return false;
+            out.force_newton = value;
+            out.has_force = true;
         }
         return true;
     }
 
-    if (equals_icase(kw, "F")) {
-        // Single finger: F:<Side>:<Finger>:<Pos>[:<Speed>]
-        if (!p || !*p) return false;
-        if (!(*p == '0' || *p == '1')) return false;
-        outCmd.side = (*p == '0') ? Hand::Side::Left : Hand::Side::Right;
-        ++p;
-        if (*p != ':') return false;
-        ++p;
-        if (!isdigit((unsigned char)*p)) return false;
-        int f = 0;
-        while (*p && isdigit((unsigned char)*p)) { f = f*10 + (*p - '0'); ++p; if (f>255) break; }
-        outCmd.finger = static_cast<Finger>(static_cast<uint8_t>(f));
-        if (*p != ':') return false;
-        ++p;
-        // Pos
-        if (!isdigit((unsigned char)*p)) return false;
-        int pos = 0;
-        while (*p && isdigit((unsigned char)*p)) { pos = pos*10 + (*p - '0'); ++p; if (pos>10000) break; }
-        outCmd.position = static_cast<uint16_t>(pos);
-        // Optional :speed
-        if (*p == ':') { ++p; if (!isdigit((unsigned char)*p)) return false; int sp=0; while (*p && isdigit((unsigned char)*p)) { sp = sp*10 + (*p - '0'); ++p; if (sp>10000) break; } outCmd.speed_deg_per_s = static_cast<uint16_t>(sp); }
-        outCmd.type = ICommandExecutor::CommandType::SingleFinger;
+    if (equalsIgnoreCase(tokens[0], "POS")) {
+        if ((count != 3U && count != 4U) || !parseUnsigned(tokens[1], integer) || integer >= FINGER_COUNT ||
+            !parseFloat(tokens[2], value) || value < 0.0f || value > 100.0f) return false;
+        out.finger = static_cast<Finger>(integer);
+        out.position_percent = value;
+        out.type = ICommandExecutor::CommandType::SinglePosition;
+        if (count == 4U) {
+            if (!parseFloat(tokens[3], out.force_newton) || out.force_newton < 0.0f || out.force_newton > DEFAULT_FORCE_LIMIT_N) return false;
+            out.has_force = true;
+        }
         return true;
     }
 
-    if (equals_icase(kw, "STOP") || equals_icase(kw, "HOLD")) {
-        if (!p || !*p) return false;
-        // expect side next
-        if (!(*p == '0' || *p == '1')) return false;
-        outCmd.side = (*p == '0') ? Hand::Side::Left : Hand::Side::Right;
-        outCmd.type = equals_icase(kw, "STOP") ? ICommandExecutor::CommandType::Stop : ICommandExecutor::CommandType::Hold;
-        return true;
-    }
-
-    if (equals_icase(kw, "GET")) {
-        // expect :STATUS
-        if (!p || !*p) return false;
-        char* sub = p;
-        if (equals_icase(sub, "STATUS")) {
-            outCmd.type = ICommandExecutor::CommandType::GetStatus;
+    if (equalsIgnoreCase(tokens[0], "FORCE")) {
+        if (count != 3U || !parseFloat(tokens[2], value) || value < 0.0f || value > DEFAULT_FORCE_LIMIT_N) return false;
+        out.force_newton = value;
+        if (equalsIgnoreCase(tokens[1], "ALL")) {
+            out.type = ICommandExecutor::CommandType::ForceAll;
             return true;
         }
+        if (!parseUnsigned(tokens[1], integer) || integer < CONTROLLED_FINGER_FIRST || integer > CONTROLLED_FINGER_LAST) return false;
+        out.finger = static_cast<Finger>(integer);
+        out.type = ICommandExecutor::CommandType::ForceFinger;
+        return true;
     }
 
-    // Unknown command
+    if (equalsIgnoreCase(tokens[0], "ADM")) {
+        if (count != 2U) return false;
+        if (equalsIgnoreCase(tokens[1], "ON")) out.type = ICommandExecutor::CommandType::AdmittanceOn;
+        else if (equalsIgnoreCase(tokens[1], "OFF")) out.type = ICommandExecutor::CommandType::AdmittanceOff;
+        else return false;
+        return true;
+    }
+    if (equalsIgnoreCase(tokens[0], "FSR")) {
+        if (count != 2U || !equalsIgnoreCase(tokens[1], "TARE")) return false;
+        out.type = ICommandExecutor::CommandType::FsrTare;
+        return true;
+    }
+    if (equalsIgnoreCase(tokens[0], "SPEED")) {
+        if (count != 2U || !parseUnsigned(tokens[1], integer) || integer < 1U || integer > 270U) return false;
+        out.speed_deg_per_s = static_cast<uint16_t>(integer);
+        out.type = ICommandExecutor::CommandType::Speed;
+        return true;
+    }
+    if (equalsIgnoreCase(tokens[0], "TORQUE")) {
+        if (count != 2U || !parseUnsigned(tokens[1], integer) || integer > 100U) return false;
+        out.torque_percent = static_cast<uint16_t>(integer);
+        out.type = ICommandExecutor::CommandType::Torque;
+        return true;
+    }
+    if (equalsIgnoreCase(tokens[0], "STATUS?")) {
+        if (count != 1U) return false;
+        out.type = ICommandExecutor::CommandType::GetStatus;
+        return true;
+    }
+    if (equalsIgnoreCase(tokens[0], "STATUS")) {
+        if (count != 3U || !equalsIgnoreCase(tokens[1], "STREAM") ||
+            !parseUnsigned(tokens[2], integer) || integer > 20U) return false;
+        out.status_rate_hz = static_cast<uint8_t>(integer);
+        out.type = ICommandExecutor::CommandType::StatusStream;
+        return true;
+    }
+    if (equalsIgnoreCase(tokens[0], "STOP")) {
+        if (count != 1U) return false;
+        out.type = ICommandExecutor::CommandType::Stop;
+        return true;
+    }
+    if (equalsIgnoreCase(tokens[0], "HOLD")) {
+        if (count != 1U) return false;
+        out.type = ICommandExecutor::CommandType::Hold;
+        return true;
+    }
     return false;
 }
-
-/**
- * @brief Parse a grip command of the form "G:<Side>:<GripID>".
- * @param data Input bytes
- * @param len Length of input
- * @param outSide Parsed Hand::Side
- * @param outGripId Parsed numeric Grip ID
- * @return true on success, false on parse error
- */

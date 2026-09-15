@@ -49,6 +49,7 @@ enum class Instruction : uint8_t {
  */
 enum class Reg : uint8_t {
     TorqueEnable = 0x28,  // 1 byte
+    TorqueLimit  = 0x30,  // 2 bytes, SRAM, 0..1000
     Position     = 0x2A,  // 4 bytes: Pos_L, Pos_H, Time_L, Time_H
     PosRead      = 0x38,  // 2 bytes (for reading current position)
     Current      = 0x45   // 2 bytes
@@ -154,7 +155,7 @@ public:
     
     /**
      * @brief Non-blocking poll - checks for RX completion, timeouts, etc.
-     * Call this from main loop at ~100Hz
+     * Call this from the main loop; it is non-blocking.
      */
     void poll();
     
@@ -181,6 +182,7 @@ public:
      * @return true if command started successfully
      */
     bool writeRegister(uint8_t id, uint8_t reg, const uint8_t* data, uint8_t len);
+    bool writeTorqueLimit(uint8_t id, uint16_t percent);
     
     // ===== ASYNC READ OPERATIONS (RX-before-TX) =====
     
@@ -191,12 +193,14 @@ public:
      * @return true if read started successfully
      */
     bool startReadCurrent(uint8_t id);
+    bool startReadPosition(uint8_t id);
     
     /**
      * @brief Get result of async read (call after poll() sets state to DATA_READY)
      * @return Current value in mA, or std::nullopt if not ready
      */
     std::optional<int32_t> getReadResult();
+    std::optional<uint16_t> getPositionResult();
     
     // ===== BLOCKING PING (Init/Discovery only) =====
     
@@ -228,6 +232,7 @@ private:
     uint8_t* rx_buf_;
     uint16_t expected_rx_len_ = 0;
     uint8_t last_read_id_ = 0;
+    Reg last_read_reg_ = Reg::Current;
     
     // Protocol helpers
     static uint8_t calcChecksum(const uint8_t* data, size_t len);

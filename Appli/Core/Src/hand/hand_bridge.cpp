@@ -1,265 +1,306 @@
 #include "hand/hand_bridge.h"
 
-/**
- * @file hand_bridge.cpp
- * @brief C API bridge between firmware `main` and the C++ HandControl subsystem.
- * @author Leon Angele
- * @date 2026-05-08
- *
- * Provides C-callable wrappers to initialize, update and command the
- * C++ `HandController` instances from the rest of the C application.
- */
-
+#include "hand/fsr400.hpp"
 #include "hand/hand_config.hpp"
-#include "hand/servo.hpp"
 #include "hand/hand_controller.hpp"
 #include "hand/serial_commander.hpp"
-#include <cstdio>
+
 #include "main.h"
 
-#include <cstdint>
+#include <array>
+#include <cstdio>
+#include <cstring>
 
 using namespace HandControl;
 
-// Forward declare HAL handles (defined in main.c)
-extern UART_HandleTypeDef huart3;    // Servo bus
-extern UART_HandleTypeDef hlpuart1;  // VCP
+extern UART_HandleTypeDef huart3;
+extern UART_HandleTypeDef hlpuart1;
 
-// C executor callback pointer
-static hand_grip_executor_t c_executor_cb = nullptr;
-
-// ASYNC DMA-based ports for both servo bus and VCP
 static Stm32UartDmaPort servoPort(&huart3);
 static Stm32UartDmaPort vcpPort(&hlpuart1);
 static ServoBus servoBus(servoPort);
 static SerialCommander commander(vcpPort);
-static HandController rightHand(Hand::Side::Right, servoBus);
-static HandController leftHand(Hand::Side::Left, servoBus);
+static HandController hand(servoBus);
 
-// Default executor: calls C++ controllers directly
-class DefaultGripExecutor : public ICommandExecutor {
+static bool torque_update_pending = false;
+static uint8_t torque_update_index = 0;
+static uint8_t status_stream_hz = 0;
+static uint32_t status_last_ms = 0;
+static bool feedback_active = false;
+static bool feedback_current_phase = false;
+static uint8_t feedback_index = 0;
+static uint32_t feedback_next_ms = 0;
+
+namespace {
+
+const char* modeName(ControllerMode mode)
+{
+    switch (mode) {
+        case ControllerMode::Boot: return "BOOT";
+        case ControllerMode::Tare: return "TARE";
+        case ControllerMode::Move: return "MOVE";
+        case ControllerMode::Position: return "POS";
+        case ControllerMode::Admittance: return "ADM";
+        case ControllerMode::Hold: return "HOLD";
+        case ControllerMode::Fault: return "FAULT";
+        default: return "FAULT";
+    }
+}
+
+void appendStatus(void)
+{
+    ControllerStatus status;
+    FSR_Snapshot fsr{};
+    hand.getStatus(&status);
+    FSR_GetSnapshot(&fsr);
+
+    char message[384]{};
+    int used = std::snprintf(message, sizeof(message), "STAT:%lu:%s:%08lX:R:",
+                             static_cast<unsigned long>(status.sequence), modeName(status.mode),
+                             static_cast<unsigned long>(status.faultFlags));
+    if (used < 0 || static_cast<size_t>(used) >= sizeof(message)) return;
+
+    auto append = [&](const char* format, auto value) {
+        if (used < 0 || static_cast<size_t>(used) >= sizeof(message)) return;
+        used += std::snprintf(message + used, sizeof(message) - static_cast<size_t>(used), format, value);
+    };
+    auto appendFixed = [&](float value, int decimals, bool comma) {
+        if (used < 0 || static_cast<size_t>(used) >= sizeof(message)) return;
+        const long scale = decimals == 2 ? 100L : 10L;
+        const long scaled = static_cast<long>(value * static_cast<float>(scale) + 0.5f);
+        const long whole = scaled / scale;
+        const long fraction = scaled % scale;
+        used += std::snprintf(message + used, sizeof(message) - static_cast<size_t>(used),
+                              comma ? ",%ld.%0*ld" : "%ld.%0*ld", whole, decimals, fraction);
+    };
+    for (size_t i = 0; i < FINGER_COUNT; ++i) appendFixed(status.referencePercent[i], 1, i != 0);
+    append(":C:", 0);
+    for (size_t i = 0; i < FINGER_COUNT; ++i) appendFixed(status.commandPercent[i], 1, i != 0);
+    append(":P:", 0);
+    for (size_t i = 0; i < FINGER_COUNT; ++i) appendFixed(status.actualPercent[i], 1, i != 0);
+    append(":PT:", 0);
+    for (size_t i = 0; i < FINGER_COUNT; ++i) append(i == 0 ? "%u" : ",%u", status.actualTicks[i]);
+    append(":S:", 0);
+    for (size_t i = CONTROLLED_FINGER_FIRST; i <= CONTROLLED_FINGER_LAST; ++i) appendFixed(status.forceSetpoint[i], 2, i != CONTROLLED_FINGER_FIRST);
+    append(":F:", 0);
+    for (size_t i = 0; i < FSR400_SENSOR_COUNT; ++i) appendFixed(fsr.force_newton[i], 2, i != 0);
+    append(":A:", 0);
+    for (size_t i = 0; i < FSR400_SENSOR_COUNT; ++i) append(i == 0 ? "%u" : ",%u", fsr.raw[i]);
+    append(":I:", 0);
+    for (size_t i = 0; i < FINGER_COUNT; ++i) append(i == 0 ? "%ld" : ",%ld", static_cast<long>(status.currentMilliamp[i]));
+    if (used >= 0 && static_cast<size_t>(used) < sizeof(message)) {
+        std::snprintf(message + used, sizeof(message) - static_cast<size_t>(used),
+                      ":SP:%u:TQ:%u\n", status.speedDegPerSecond, status.torqueLimitPercent);
+        commander.sendText(message);
+    }
+}
+
+class DefaultGripExecutor final : public ICommandExecutor {
 public:
-    bool executeCommand(const ICommandExecutor::Command& cmd) override {
-        switch (cmd.type) {
-            case ICommandExecutor::CommandType::GripDefault:
-                if (cmd.side == Hand::Side::Right) rightHand.setTargetGrip(cmd.grip);
-                else leftHand.setTargetGrip(cmd.grip);
+    bool executeCommand(const Command& command) override
+    {
+        switch (command.type) {
+            case CommandType::Pose:
+                if (command.has_force) return setPoseWithForce(command);
+                hand.setTargetGrip(command.grip);
                 return true;
-
-            case ICommandExecutor::CommandType::GripGlobalPct: {
-                // compute per-finger percents from global percent
-                std::array<uint16_t, static_cast<size_t>(Finger::Count)> arr{};
-                for (size_t i=0;i<arr.size();++i) arr[i] = cmd.percent;
-                if (cmd.side == Hand::Side::Right) rightHand.setTargetGripWithPercent(cmd.grip, arr.data());
-                else leftHand.setTargetGripWithPercent(cmd.grip, arr.data());
+            case CommandType::SinglePosition:
+                if (command.has_force) return hand.setSingleFingerPercentWithForce(
+                    command.finger, command.position_percent, command.force_newton);
+                return hand.setSingleFingerPercent(command.finger, command.position_percent);
+            case CommandType::ForceAll:
+                return hand.setForceAll(command.force_newton);
+            case CommandType::ForceFinger:
+                return hand.setForce(command.finger, command.force_newton);
+            case CommandType::AdmittanceOn:
+                if (!FSR_IsTared()) return false;
+                hand.setAdmittanceEnabled(true);
                 return true;
-            }
-
-            case ICommandExecutor::CommandType::GripPerFingerPct: {
-                if (cmd.side == Hand::Side::Right) rightHand.setTargetGripWithPercent(cmd.grip, cmd.perFingerPercent.data());
-                else leftHand.setTargetGripWithPercent(cmd.grip, cmd.perFingerPercent.data());
+            case CommandType::AdmittanceOff:
+                hand.setAdmittanceEnabled(false);
                 return true;
-            }
-            case ICommandExecutor::CommandType::SingleFinger:
-                if (cmd.side == Hand::Side::Right) rightHand.setSingleFingerPosition(cmd.finger, cmd.position, cmd.speed_deg_per_s);
-                else leftHand.setSingleFingerPosition(cmd.finger, cmd.position, cmd.speed_deg_per_s);
+            case CommandType::FsrTare:
+                if (hand.admittanceEnabled() || hand.isMoving()) return false;
+                return FSR_Tare();
+            case CommandType::Speed:
+                hand.setSpeed(command.speed_deg_per_s);
                 return true;
-            case ICommandExecutor::CommandType::Stop:
-                if (cmd.side == Hand::Side::Right) rightHand.stopImmediate(); else leftHand.stopImmediate();
+            case CommandType::Torque:
+                hand.setTorqueLimit(command.torque_percent);
+                torque_update_pending = true;
+                torque_update_index = 0;
                 return true;
-            case ICommandExecutor::CommandType::Hold:
-                if (cmd.side == Hand::Side::Right) rightHand.holdCurrent(); else leftHand.holdCurrent();
+            case CommandType::Stop:
+            case CommandType::Hold:
+                hand.stopImmediate();
                 return true;
-            case ICommandExecutor::CommandType::GetStatus: {
-                // Print status to VCP
-                // Gather minimal status from controllers and bus
-                // Note: printf usage is OK for VCP
-                // Right hand
-                (void)printf("[STATUS] RightHand: (not detailed)\r\n");
-                (void)printf("[STATUS] LeftHand: (not detailed)\r\n");
+            case CommandType::GetStatus:
+                appendStatus();
                 return true;
-            }
-
+            case CommandType::StatusStream:
+                status_stream_hz = command.status_rate_hz;
+                status_last_ms = HAL_GetTick();
+                return true;
             default:
                 return false;
         }
     }
-};
-static DefaultGripExecutor defaultExecutor;
 
-// Adapter that forwards to C callback
-class CExecutorAdapter : public ICommandExecutor {
-public:
-    bool executeCommand(const ICommandExecutor::Command& cmd) override {
-        if (!c_executor_cb) return false;
-        // Only support the simple legacy grip command via C callback
-        if (cmd.type == ICommandExecutor::CommandType::GripDefault) {
-            return c_executor_cb(static_cast<uint8_t>(cmd.side), static_cast<uint8_t>(cmd.grip));
-        }
-        return false;
+private:
+    bool setPoseWithForce(const Command& command)
+    {
+        return hand.setForceAll(command.force_newton) &&
+               (hand.setTargetGrip(command.grip), true);
     }
 };
-static CExecutorAdapter cExecutorAdapter;
+
+static DefaultGripExecutor defaultExecutor;
+
+} // namespace
 
 extern "C" {
 
-/**
- * @brief Initialize the hand bridge subsystem.
- *
- * Must be called after HAL/peripheral initialization. This sets the
- * `SerialCommander` executor to the default C++ executor which forwards
- * commands to the local `HandController` instances.
- */
-void hand_bridge_init(void) {
-
+void hand_bridge_init(void)
+{
     commander.setExecutor(&defaultExecutor);
-    printf("[BRIDGE] Hand controller initialized\r\n");
+    hand.setTorqueLimit(DEFAULT_TORQUE_LIMIT_PERCENT);
+    torque_update_pending = true;
+    torque_update_index = 0;
 }
 
-/**
- * @brief Register a C callback executor for grip commands.
- *
- * If `cb` is non-NULL, incoming serial grip commands are forwarded to the
- * provided C callback via the `CExecutorAdapter`. Passing NULL restores the
- * default C++ executor implementation.
- *
- * @param cb Function pointer of type `hand_grip_executor_t` (or NULL).
- */
-void hand_bridge_set_executor(hand_grip_executor_t cb) {
-    c_executor_cb = cb;
-    if (cb) {
-        commander.setExecutor(&cExecutorAdapter);
-    } else {
-        commander.setExecutor(&defaultExecutor);
-    }
-}
-
-/**
- * @brief Set a target grip on the specified hand.
- *
- * This is a C-callable helper that maps numeric `side` and `grip` values to
- * the internal C++ enums and schedules a smooth trajectory. Each finger moves
- * at its configured maxSpeed from AxisSettings.
- *
- * @param side 0 = Left, 1 = Right
- * @param grip Grip identifier as `uint8_t` (maps to `GripType`)
- * @return true if the request was accepted
- */
-bool hand_bridge_set_target_grip(uint8_t side, uint8_t grip) {
-    Hand::Side s = (side == 1) ? Hand::Side::Right : Hand::Side::Left;
-    HandControl::GripType g = static_cast<HandControl::GripType>(grip);
-    if (s == Hand::Side::Right) {
-        rightHand.setTargetGrip(g);
-    } else {
-        leftHand.setTargetGrip(g);
-    }
+bool hand_bridge_set_target_grip(uint8_t grip)
+{
+    if (grip >= static_cast<uint8_t>(GripType::Count)) return false;
+    hand.setTargetGrip(static_cast<GripType>(grip));
     return true;
 }
 
-/**
- * @brief Periodic update called from the fixed-rate ADC control tick.
- *
- * Calls the per-hand `update()` method which performs non-blocking
- * interpolation and telemetry polling. It is driven by the 500 Hz TIM6 update
- * event.
- */
-void hand_bridge_update(void) {
-    rightHand.update();
-    leftHand.update();
+void hand_bridge_update(void)
+{
+    FSR_Snapshot snapshot{};
+    FSR_GetSnapshot(&snapshot);
+    hand.update(snapshot);
 }
 
-/**
- * @brief Feed a received UART byte into the commander (ISR-safe).
- *
- * Typically called from the HAL UART RX IRQ to push incoming bytes into the
- * ring buffer. Returns false if the internal buffer is full.
- *
- * @param b Received byte
- * @return true if byte was accepted, false on overflow
- */
-bool commander_bridge_feed_byte(uint8_t b) {
-    return commander.feedByte(b);
+void hand_bridge_service(void)
+{
+    servoBus.poll();
+
+    /* Consume one completed feedback transaction. */
+    if (feedback_active) {
+        const Finger finger = static_cast<Finger>(feedback_index);
+        const BusState state = servoBus.getState();
+        if (state == BusState::DATA_READY) {
+            if (feedback_current_phase) {
+                const auto current = servoBus.getReadResult();
+                if (current.has_value()) hand.setActualCurrent(finger, *current, HAL_GetTick());
+            } else {
+                const auto position = servoBus.getPositionResult();
+                if (position.has_value()) {
+                    ControllerStatus status;
+                    hand.getStatus(&status);
+                    hand.setActualFeedback(finger, *position, status.currentMilliamp[feedback_index], HAL_GetTick());
+                }
+            }
+            feedback_active = false;
+            if (feedback_current_phase) {
+                feedback_current_phase = false;
+                feedback_index = static_cast<uint8_t>((feedback_index + 1U) % FINGER_COUNT);
+                feedback_next_ms = HAL_GetTick() + 2U;
+            } else {
+                feedback_current_phase = true;
+                feedback_next_ms = HAL_GetTick() + 2U;
+            }
+        } else if (state == BusState::IDLE) {
+            /* TIMEOUT is recovered by ServoBus::poll(). Skip this sample. */
+            feedback_active = false;
+            if (feedback_current_phase) {
+                feedback_current_phase = false;
+                feedback_index = static_cast<uint8_t>((feedback_index + 1U) % FINGER_COUNT);
+            } else {
+                feedback_current_phase = true;
+            }
+            feedback_next_ms = HAL_GetTick() + 10U;
+        }
+    }
+
+    /* Reserve a short, periodic slot for real servo feedback. */
+    if (!torque_update_pending && !feedback_active && servoBus.getState() == BusState::IDLE &&
+        (HAL_GetTick() >= feedback_next_ms)) {
+        const Finger finger = static_cast<Finger>(feedback_index);
+        feedback_active = feedback_current_phase
+            ? servoBus.startReadCurrent(Hand::getServoID(finger))
+            : servoBus.startReadPosition(Hand::getServoID(finger));
+        if (!feedback_active) feedback_next_ms = HAL_GetTick() + 2U;
+    }
+
+    /* Position output has priority over diagnostics when a feedback transaction is active. */
+    if (!torque_update_pending && !feedback_active &&
+        servoBus.getState() == BusState::IDLE && hand.outputPending()) {
+        std::array<uint8_t, FINGER_COUNT> ids{};
+        std::array<uint16_t, FINGER_COUNT> positions{};
+        std::array<uint16_t, FINGER_COUNT> times{};
+        if (hand.copyOutputFrame(ids.data(), positions.data(), times.data(), FINGER_COUNT) &&
+            servoBus.syncWritePositions(ids.data(), positions.data(), times.data(), FINGER_COUNT)) {
+            hand.markOutputSent();
+        }
+    }
+
+    if (torque_update_pending && servoBus.getState() == BusState::IDLE) {
+        if (torque_update_index >= FINGER_COUNT) {
+            torque_update_pending = false;
+        } else if (servoBus.writeTorqueLimit(
+                       Hand::getServoID(static_cast<Finger>(torque_update_index)), hand.torqueLimit())) {
+            ++torque_update_index;
+        }
+    }
+
+    commander.processCommand();
+    commander.serviceTx();
+
+    const uint8_t rate = status_stream_hz;
+    if (rate != 0U) {
+        const uint32_t interval = 1000U / rate;
+        const uint32_t now = HAL_GetTick();
+        if ((now - status_last_ms) >= interval) {
+            status_last_ms = now;
+            appendStatus();
+        }
+    }
 }
 
-/**
- * @brief Process pending ASCII commands (call from non-ISR/main loop).
- *
- * Parses complete lines from the internal buffer and executes them via the
- * registered executor.
- */
-void commander_bridge_process(void) {
+void commander_bridge_process(void)
+{
     commander.processCommand();
 }
 
-/**
- * @brief HAL TX complete callback bridge.
- *
- * Forward the HAL UART TX complete event to the `Stm32UartDmaPort` router.
- * Should be called from `HAL_UART_TxCpltCallback` with the `UART_HandleTypeDef*`.
- *
- * @param huart Pointer to the UART handle provided by HAL
- */
-void bridge_on_uart_tx(void* huart) {
+bool commander_bridge_feed_byte(uint8_t byte)
+{
+    return commander.feedByte(byte);
+}
+
+void hand_bridge_ping_all_servos(void)
+{
+    std::printf("\r\n[BRIDGE] Pinging configured servos...\r\n");
+    for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        const Finger finger = static_cast<Finger>(i);
+        const bool online = servoBus.pingServo(Hand::getServoID(finger), 100);
+        std::printf("  [%u] %s (ID %u): %s\r\n", static_cast<unsigned>(i),
+                    Hand::getAxisConfig(finger).name.data(), Hand::getServoID(finger),
+                    online ? "OK" : "TIMEOUT");
+        HAL_Delay(20);
+    }
+    std::printf("[BRIDGE] Ping complete.\r\n\r\n");
+}
+
+void bridge_on_uart_tx(void* huart)
+{
     Stm32UartDmaPort::onTxComplete(static_cast<UART_HandleTypeDef*>(huart));
 }
 
-/**
- * @brief HAL RX complete callback bridge.
- *
- * Forward the HAL UART RX complete event to the `Stm32UartDmaPort` router.
- * Should be called from `HAL_UART_RxCpltCallback` with the `UART_HandleTypeDef*`.
- *
- * @param huart Pointer to the UART handle provided by HAL
- */
-void bridge_on_uart_rx(void* huart) {
+void bridge_on_uart_rx(void* huart)
+{
     Stm32UartDmaPort::onRxComplete(static_cast<UART_HandleTypeDef*>(huart));
 }
 
-/**
- * @brief Ping all configured servos and print availability to VCP.
- * 
- * Tests connectivity to all servos in LeftHandIDs and RightHandIDs.
- * Outputs results via printf (VCP). Intended for startup diagnostics only.
- */
-void hand_bridge_ping_all_servos(void) {
-    printf("\r\n[BRIDGE] Pinging all servos...\r\n");
-    
-    // Test left hand servos
-    printf("[BRIDGE] Left Hand:\r\n");
-    for (size_t i = 0; i < static_cast<size_t>(Finger::Count); ++i) {
-        uint8_t id = LeftHandIDs[i];
-        bool online = servoBus.pingServo(id, 100);
-        const char* status = online ? "OK" : "TIMEOUT";
-        printf("  [%d] %s (ID %d): %s\r\n", i, LeftAxisSettings[i].name.data(), id, status);
-        HAL_Delay(20);  // Delay between pings for bus stability
-    }
-    
-    // Test right hand servos
-    printf("[BRIDGE] Right Hand:\r\n");
-    for (size_t i = 0; i < static_cast<size_t>(Finger::Count); ++i) {
-        uint8_t id = RightHandIDs[i];
-        bool online = servoBus.pingServo(id, 100);
-        const char* status = online ? "OK" : "TIMEOUT";
-        printf("  [%d] %s (ID %d): %s\r\n", i, RightAxisSettings[i].name.data(), id, status);
-        HAL_Delay(20);  // Delay between pings for bus stability
-    }
-    
-    printf("[BRIDGE] Ping complete.\r\n\r\n");
-}
-
 } // extern "C"
-
-// NOTE: hand_bridge_set_servo_deg is disabled in the new async implementation
-// because it uses blocking calls that violate the non-blocking architecture.
-// Use HandController::setTargetGrip() instead for coordinated hand movements.
-/*
-extern "C" bool hand_bridge_set_servo_deg(uint8_t id, int16_t degrees, uint16_t time_ms) {
-    if (degrees < -90) degrees = -90;
-    if (degrees > 90) degrees = 90;
-    uint32_t pos = static_cast<uint32_t>(static_cast<int32_t>(degrees) + 90);
-    uint16_t servo_pos = static_cast<uint16_t>((pos * 4095u) / 180u);
-    // FIXME: Servo class no longer exists in async implementation
-    // Would need to use ServoBus::writeRegister() with proper async handling
-    return false;
-}
-*/

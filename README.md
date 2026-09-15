@@ -1,111 +1,221 @@
- # PIB Hand Control - STM32N6 Intelligence Edition
+# PIB Hand Control
 
- Diese Firmware ermöglicht die Steuerung von zwei Roboterhänden (jeweils 6 Freiheitsgrade) auf Basis des **NUCLEO-N657X0-Q** (STM32N6-Serie). Die Architektur ist auf geringe Latenz, organische Bewegungen und die zukünftige Integration von Edge-AI optimiert.
+Firmware fuer eine einzelne Roboterhand mit sechs STS3215-Servos auf dem
+NUCLEO-N657X0-Q.
 
- ## 🚀 Kern-Features
+Die Hand kann entweder positionsgefuehrt oder mit einer individuellen
+Admittanzregelung fuer vier Finger betrieben werden. Der Daumen bleibt als
+Anker rein positionsgeregelt.
 
- * **100Hz Real-Time Control Loop**: Aktualisierung aller Fingerpositionen alle 10ms für flüssige Bewegungen.
+## Systemuebersicht
 
- 	Hinweis: Im aktuellen Code wird der Hand-Controller in `main.c` alle 10 ms aufgerufen (100 Hz). In der Bridge-Implementierung ist aktuell nur die rechte Hand aktiv — `leftHand.update()` ist in `Appli/Core/Src/hand/hand_bridge.cpp` auskommentiert.
- * **Smooth Trajectories**: Ruckelfreie Beschleunigung und Abbremsung durch S-Kurven-Interpolation (**Smoothstep**).
- * **ROS 2 Interface**: ASCII-basiertes Protokoll für die einfache Integration in ROS 2-Systeme über USB/Seriell.
- * **Adaptive Grasping (AI Placeholder)**: Integrierte Schnittstelle für den **ST Neural-ART Accelerator**, um neuronale Netze zur Griffoptimierung direkt auf der Hardware auszuführen.
- * **DMA-Optimierung**: Non-blocking Kommunikation mit den Servos über den GPDMA-Controller des STM32N6.
- * **Sync Write**: Zeitgleicher Start und Stopp aller Finger einer Hand durch optimierte Bus-Pakete (Instruction 0x83).
+```text
+PC / Gegenstelle
+       |
+       | LPUART1 / VCP, ASCII
+       v
+SerialCommander
+       |
+       v
+HandController
+       |                     +------------------+
+       |                     | ADC1 + GPDMA     |
+       |                     | 5 x FSR400       |
+       |                     +--------+---------+
+       |                              |
+       |                              v
+       |                     Kraft-/Admittanzregler
+       v
+ServoBus / USART3 / STS3215
+```
 
- ## 🛠 Hardware-Konfiguration
+## Hardware und Echtzeit
 
- * **MCU**: STM32N657X0 (Cortex-M55 @ 800 MHz).
- * **Beschleuniger**: Integrierte NPU (Neural-ART) für Deep Learning Tasks.
- * **Servos**: Waveshare / Feetech **STS3215** Serial Bus Servos.
- * **Bus**: USART3 mit 1.000.000 Baud (1 Mbps).
+| Funktion | Peripherie | Einstellung |
+|---|---|---|
+| VCP zu Gegenstelle | LPUART1 | 460800 Baud, 8N1 |
+| Servo-Bus | USART3 | 1000000 Baud |
+| FSR-Sensoren | ADC1 + GPDMA | 5 Kanaele, 12 Bit |
+| Abtasttrigger | TIM6 TRGO | 500 Hz, 2 ms |
+| Positionstrajektorie | HandController | Smoothstep |
+| Servo-Feedback | USART3 Readback | Position und Strom, round-robin |
 
- ## 📡 ROS 2 Protokoll
+Die ADC-Reihenfolge ist:
 
- Der `SerialCommander` verarbeitet Befehle im folgenden Format:
+| FSR-Index | Finger | ADC-Kanal | Pin |
+|---:|---|---|---|
+| 0 | Daumen | ADC1_INP5 | PA8 |
+| 1 | Zeigefinger | ADC1_INP10 | PA9 |
+| 2 | Mittelfinger | ADC1_INP16 | PF3 |
+| 3 | Ringfinger | ADC1_INP11 | PA10 |
+| 4 | Kleiner Finger | ADC1_INP13 | PA12 |
 
- **BAUD:** `460800`
- **Syntax:** `G:<Side>:<GripID>\n`
+## Servoachsen
 
- * **Side**: `0` für die linke Hand, `1` für die rechte Hand.
- * **GripID**: Ganzzahliger Index des gewünschten Griffs aus der Konfigurations-Datenbank.
+| Achse | Index | Servo-ID | Sensor | Regelungsart |
+|---|---:|---:|---:|---|
+| Daumenbeugung | 0 | 1 | FSR 0 | Position |
+| Zeigefinger | 1 | 2 | FSR 1 | Position + Admittanz |
+| Mittelfinger | 2 | 3 | FSR 2 | Position + Admittanz |
+| Ringfinger | 3 | 4 | FSR 3 | Position + Admittanz |
+| Kleiner Finger | 4 | 5 | FSR 4 | Position + Admittanz |
+| Daumenrotation | 5 | 6 | keiner | Position |
 
- **Beispiele:**
- * `G:1:0\n` -> Rechte Hand öffnen (OPEN).
- * `G:0:4\n` -> Linke Hand schließt zum Zylindergriff.
+Positionen werden als Prozent der konfigurierten Achsbewegung gesendet:
 
- ## 🖐 Verfügbare Griffe
+```text
+0 %   = offene Referenzposition
+100 % = geschlossene Referenzposition
+```
 
- Die Griff-Positionen sind in `hand_config.hpp` als native Servo‑Einheiten (0–4095) definiert. Die hier gezeigten Werte entsprechen direkt den Einträgen in der `GripDatabase`:
+Die aktuelle Startkonfiguration verwendet fuer alle Achsen:
 
- | ID | Name | Finger-Konfiguration (0–4095) |
- | :--- | :--- | :--- |
- | 0 | **OPEN** | {0, 0, 0, 0, 0, 0} |
- | 1 | **SPITZGRIFF** | {4095, 4095, 4095, 4095, 4095, 4095} |
- | 2 | **DREIPUNKTGRIFF** | {3185, 3185, 3185, 0, 0, 2047} |
- | 3 | **SCHLUESSELGRIFF** | {2730, 1365, 0, 0, 0, 2730} |
- | 4 | **ZYLINDERGRIFF** | {3640, 3640, 3640, 3640, 3640, 1365} |
- | 5 | **HAKENGRIFF** | {0, 3640, 3640, 3640, 3640, 0} |
- | 6 | **SPHAERISCHER GRIFF** | {2730, 2730, 2730, 2730, 2730, 1820} |
- | 7 | **Stinkefinger** | {4095, 4095, 0, 4095, 4095, 2000} |
- 
+```text
+zeroPos = 2047
+maxPos  = 4095
+```
 
- ## 📂 Software-Architektur
+## Admittanzregelung
 
- * `main.c`: Systemstart, Initialisierung der High-End Peripherie (CACHEAXI, RIF) und 100Hz Loop-Taktung.
- * `hand_config.hpp`: Typ-sichere Enums für Finger und Griffe sowie Hardware-Limits.
- * `hand_controller.cpp`: Berechnung der Zwischenpositionen und Telemetrie-Abfrage der Servos.
- * `serial_commander.cpp`: Ringpuffer-basierter Parser für eintreffende USB-Befehle.
- * `servo.cpp`: Low-Level DMA-Treiber für das STS/SCS-Protokoll.
+Die Kraftregelung ist pro Finger getrennt. Jeder geregelte Finger besitzt:
 
- ### HandController-Logik
- - **Taktung:** Läuft mit 100 Hz (je 10 ms Zyklus).
- - **setTargetGrip:** Setzt Zielgriff sofort und startet eine sanfte Trajektorie zum Ziel. Jeder Finger bewegt sich mit seiner individuellen Geschwindigkeit aus `AxisSettings` (in Grad/Sekunde, wobei 0-4095 Servo-Einheiten = 360°).
- - **Geschwindigkeitssteuerung:** Config-basiert (`maxSpeed` in °/s), jeder Finger berechnet seine Fahrtzeit automatisch: `duration = (Δ Position × 1000) / (maxSpeed × 4095/360)`. Finger kommen asynchron an.
- - **Interpolation:** Zwischenpositionen werden via Smoothstep (S‑Kurve) berechnet für gleichmäßige Bewegung mit sanftem Anfahren/Abbremsen.
- - **SyncWrite:** Positionsbefehle werden mit `syncWritePositions` an alle Finger gesendet (non-blocking), servo `time` Parameter konstant bei 10 ms für smoothe Ausführung.
- - **Telemetrie (Round‑Robin):** Bus wird mit `bus.poll()` getaktet; `startReadCurrent` initiiert RX-before-TX; bei `DATA_READY` wird das Ergebnis verarbeitet und zum nächsten Finger weitergerückt.
- - **Predict-Hook:** `predictGraspAdjustment` dient als Hook für zukünftige AI‑Anpassungen (Slip/Force).
- - **Scope:** Aktuell wird nur die rechte Hand regelmäßig upgedatet (`leftHand.update()` auskommentiert).
+- eigene Positionsreferenz `q_ref`
+- eigenen virtuellen Admittanzzustand
+- eigenen FSR-Kraftwert
+- eigenen Kraftsollwert
+- eigene Geschwindigkeits- und Positionsgrenzen
 
- ## 🧠 Edge-AI Integration
+Die Posen- oder Einzelpositionsbefehle setzen den Arbeitspunkt. Nach Erreichen
+der Referenzposition wird die Admittanz aktiv, wenn `ADM:ON` gesetzt wurde.
 
- Dank der Cortex-M55 Architektur und der dedizierten NPU auf dem N6-Chip können komplexe Modelle zur Slip-Detection (Rutsch-Erkennung) oder taktilen Rückmeldung implementiert werden. Die Funktion `predictGraspAdjustment` im `HandController` dient als dedizierter Hook für X-CUBE-AI generierten Code.
+Das verwendete einseitige Modell lautet:
 
-**Serial Commands**
+```text
+M * q_ddot + D * q_dot + K * min(q - q_ref, 0) = F_soll - F_ist
+```
 
-- **Command:** `G:<Side>:<GripID>`
-	- **Description:** Legacy-Aufruf zum Setzen eines vordefinierten Griffs. Nutzt die in `hand_config.hpp` konfigurierten `maxSpeed`-Werte.
-	- **Example:** `G:1:0` — Rechte Hand öffnen (OPEN)
+Verhalten:
 
-- **Command:** `G:<Side>:<GripID>:V:<percent>`
-	- **Description:** Gleicher Griff, aber alle Finger bewegen sich mit `percent` (0–100) relativ zur konfigurierten `maxSpeed`.
-	- **Example:** `G:0:2:V:50` — Linke Hand, Griff 2, 50% der Max-Geschwindigkeit
+- Bei zu kleiner Kraft beugt der Finger weiter.
+- Bei zu grosser Kraft gibt der Finger in Streckrichtung nach.
+- Die virtuelle Feder wirkt nur unterhalb der Referenzposition.
+- Schnelle Auslenkung erzeugt durch den Daempfer eine groessere Gegenkraft.
+- Der Daumen und die Daumenrotation werden nicht durch FSR-Werte verschoben.
 
-- **Command:** `G:<Side>:<GripID>:Vx:<v0>,...,<v5>`
-	- **Description:** Per-Finger-Prozentwerte (je 0–100). Reihenfolge: Thumb, Index, Middle, Ring, Pinky, ThumbRotation.
-	- **Example:** `G:1:3:Vx:50,60,70,80,90,100`
+Startparameter:
 
-- **Command:** `F:<Side>:<Finger>:<Pos>[:<Speed>]`
-	- **Description:** Setzt einen einzelnen Finger (`Finger` Index 0..5) auf Position `Pos` (0..4095). Optionaler `Speed` in °/s; wenn weggelassen, wird `maxSpeed` aus `hand_config.hpp` verwendet.
-	- **Example:** `F:0:2:3000` — Linke Hand, Middle auf 3000 mit Standardgeschwindigkeit
-	- **Example:** `F:0:2:3000:120` — Linke Hand, Middle auf 3000 mit 120 °/s
+```text
+Reglertakt:              500 Hz
+Virtuelle Steifigkeit K: 0.1 N/%
+Eigenfrequenz:            3 Hz
+Kraft-Totzone:            0.05 N
+Standardgeschwindigkeit: 200 deg/s
+Maximale Sollkraft:       5 N
+Servo-Torque-Limit:       50 %
+```
 
-- **Command:** `STOP:<Side>` / `HOLD:<Side>`
-	- **Description:** `STOP` bricht alle laufenden Trajektorien ab und hält die Servos in ihrer aktuellen Position mittels Sync-Write. `HOLD` verhält sich gleich (Reserviert für spätere Unterscheidung).
-	- **Example:** `STOP:0` — Stoppe/halte linke Hand sofort
+## FSR-Auswertung
 
-- **Command:** `GET:STATUS`
-	- **Description:** Liefert einen kompakten Statusreport (Bus- und Controller-Status). Ausgabe erfolgt via VCP.
-	- **Example:** `GET:STATUS`
+Die FSR400-Sensoren werden per ADC/DMA eingelesen und mit einem IIR-Filter
+geglattet. Beim Start werden unbelastete Samples fuer den Nullpunkt-Tare
+gesammelt. Ein erneuter Tare ist per `FSR:TARE` moeglich.
 
-**Fehlerantworten & Limits**
+Die Kraft wird aktuell ueber eine zentrale Datenblatt-Naeherung berechnet. Ein
+FSR400 ist keine kalibrierte Loadcell. Fuer eine belastbare 1-N-Regelung muss
+fuer jeden Sensor eine reale Kraftkalibrierung als LUT hinterlegt werden.
 
-- `ERR SYNTAX` — Allgemeiner Syntaxfehler oder unvollständiges Kommando.
-- `ERR GRIPID` — Ungültige Grip-ID (außerhalb der definierten `GripDatabase`).
-- `ERR SPEED` — Ungültiger Prozent- oder Speedwert (z.B. >100% oder negative Werte).
-- `ERR POS` — Ungültige Position (außerhalb 0..4095).
-- `ERR NOEXEC` / `ERR EXEC` — Kein Executor registriert oder Ausführungsfehler.
-- `OK` — Erfolg.
+Der per VCP akzeptierte Kraftbereich ist:
 
-Hinweis: Alle Befehle sind abwärtskompatibel; das ursprüngliche `G:<Side>:<GripID>` Verhalten bleibt unverändert.
+```text
+0.0 ... 5.0 N
+```
+
+## VCP-Steuerung
+
+Das vollstaendige Protokoll steht in:
+
+`VCP_HAND_SERIAL_PROTOCOL.md`
+
+UART-Einstellung:
+
+```text
+460800 Baud, 8 Datenbits, keine Paritaet, 1 Stoppbit, kein Flow-Control
+```
+
+Beispielsequenz:
+
+```text
+FSR:TARE\r\n
+POSE:4:1.0\r\n
+ADM:ON\r\n
+POS:1:50:1.0\r\n
+STATUS:STREAM:10\r\n
+```
+
+Alle Befehle sind ASCII-Zeilen und werden mit `LF`, `CR` oder `CRLF`
+abgeschlossen. Es gibt keine alten `Side`-Parameter mehr. Die Gegenstelle
+steuert genau eine konfigurierte Hand.
+
+## Statusdaten
+
+Mit `STATUS?` oder `STATUS:STREAM:<Hz>` koennen folgende Daten abgefragt werden:
+
+- Controller-Modus
+- Fehlerflags
+- Positionsreferenzen
+- ausgegebene Positionssollwerte
+- echte Servo-Istpositionen in Prozent und Ticks
+- FSR-Rohwerte
+- FSR-Kraftnaeherungen
+- Servo-Iststroeme
+- globale Geschwindigkeit
+- globales Torque-Limit
+
+## Wichtige Dateien
+
+| Datei | Aufgabe |
+|---|---|
+| `Appli/Core/Inc/hand/hand_config.hpp` | Achsen, Servo-IDs, Posen und Limits |
+| `Appli/Core/Inc/hand/hand_controller.hpp` | Controllerzustand und Statusstruktur |
+| `Appli/Core/Src/hand/hand_controller.cpp` | Referenztrajektorien und Fingerregelung |
+| `Appli/Core/Inc/hand/admittance_controller.hpp` | HAL-freie Reglerdefinition |
+| `Appli/Core/Src/hand/admittance_controller.cpp` | Diskreter Admittanzschritt |
+| `Appli/Core/Src/hand/fsr400.cpp` | ADC/DMA, Filter, Tare und Kraft-Naeherung |
+| `Appli/Core/Src/hand/servo.cpp` | STS3215-Protokoll und Servo-Feedback |
+| `Appli/Core/Src/hand/serial_commander.cpp` | VCP-Parser und Antwortqueue |
+| `Appli/Core/Src/hand/hand_bridge.cpp` | VCP-, Controller- und Busintegration |
+| `Appli/Core/Src/main.c` | STM32-Initialisierung und Mainloop |
+
+## Build
+
+Voraussetzung ist eine vorhandene STM32CubeIDE- beziehungsweise CubeCLT-
+Toolchain mit `arm-none-eabi-g++` und MinGW Make.
+
+Debug-Build aus dem Projektstamm:
+
+```powershell
+& 'C:\MinGW\bin\mingw32-make.exe' -C Appli/Debug -j2 all -B
+```
+
+Ohne erzwungenen Vollbuild:
+
+```powershell
+& 'C:\MinGW\bin\mingw32-make.exe' -C Appli/Debug -j2 all
+```
+
+Die Ausgaben liegen danach in `Appli/Debug`:
+
+```text
+PibHand_NucleoN6_Appli.elf
+PibHand_NucleoN6_Appli.bin
+PibHand_NucleoN6_Appli.map
+```
+
+## Grenzen und Inbetriebnahme
+
+- Die FSR-N-Werte muessen vor einer sicherheitskritischen Nutzung kalibriert werden.
+- Die Datenblatt-Naeherung ersetzt keine mechanische Kraftbegrenzung.
+- `TORQUE:<Percent>` schreibt ein fluechtiges STS3215-SRAM-Limit und wird nach Reset erneut gesetzt.
+- Ein Servo- oder Sensorfehler muss ueber die Status-Fehlerflags behandelt werden.
+- Vor dem Krafttest zuerst Sensor-Tare, Servo-Ping, Torque-Limit und Einzelbewegungen pruefen.
+- Die Firmware wurde gebaut, aber die Admittanz wurde noch nicht mit realer Kontaktlast auf der Hardware validiert.
