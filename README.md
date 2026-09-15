@@ -156,6 +156,23 @@ Alle Befehle sind ASCII-Zeilen und werden mit `LF`, `CR` oder `CRLF`
 abgeschlossen. Es gibt keine alten `Side`-Parameter mehr. Die Gegenstelle
 steuert genau eine konfigurierte Hand.
 
+### Python-GUI
+
+Die Tkinter-GUI bietet sechs Positionsachsen einschliesslich Daumenrotation,
+Posen, Kraft-/Admittanzsteuerung und die vollstaendige Statusanzeige. Python
+3.10 oder neuer wird empfohlen.
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r tools\requirements.txt
+.\.venv\Scripts\python.exe tools\hand_control_gui.py
+```
+
+Nach Auswahl des ST-LINK-VCP-Ports verbindet sich die GUI mit 460800 Baud und
+aktiviert automatisch den Statusstream mit 10 Hz. Positionsbefehle werden beim
+Loslassen des jeweiligen Sliders gesendet. `STOP` haelt die zuletzt ausgegebene
+Position und ist kein Hardware-Not-Aus.
+
 ## Statusdaten
 
 Mit `STATUS?` oder `STATUS:STREAM:<Hz>` koennen folgende Daten abgefragt werden:
