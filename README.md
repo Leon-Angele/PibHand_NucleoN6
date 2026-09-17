@@ -208,6 +208,13 @@ Mit `STATUS?` oder `STATUS:STREAM:<Hz>` koennen folgende Daten abgefragt werden:
 Voraussetzung ist eine vorhandene STM32CubeIDE- beziehungsweise CubeCLT-
 Toolchain mit `arm-none-eabi-g++` und MinGW Make.
 
+> [!NOTE]
+> Der Build kann selbstverständlich auch direkt über die **STM32CubeIDE** ausgeführt werden.
+> Dabei hatte ich allerdings gelegentlich das Problem, dass das Projekt neu importiert werden musste, da andernfalls scheinbar zufällige Build-Fehler auftraten.
+>
+> Für das **Debugging** würde ich hingegen die STM32CubeIDE gegenüber beispielsweise VS Code empfehlen. Die Einrichtung des STM32N6-Debuggings in VS Code verursacht vergleichsweise viel zusätzlichen Konfigurationsaufwand.
+
+
 Debug-Build aus dem Projektstamm:
 
 ```powershell
