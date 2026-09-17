@@ -92,7 +92,10 @@ void SerialCommander::sendResponse(const char* msg, size_t len) noexcept
     if (len >= TX_MESSAGE_SIZE) len = TX_MESSAGE_SIZE - 1U;
 
     const uint8_t next = static_cast<uint8_t>((tx_head_ + 1U) % TX_QUEUE_DEPTH);
-    if (next == tx_tail_) return;
+    if (next == tx_tail_) {
+        if (error_callback_ != nullptr) error_callback_();
+        return;
+    }
     std::memcpy(tx_queue_[tx_head_].data(), msg, len);
     tx_lengths_[tx_head_] = static_cast<uint16_t>(len);
     tx_head_ = next;
@@ -111,6 +114,8 @@ void SerialCommander::serviceTx() noexcept
     tx_tail_ = static_cast<uint8_t>((tx_tail_ + 1U) % TX_QUEUE_DEPTH);
     if (port_.transmitDMA(tx_dma_buffer_.data(), length)) {
         tx_active_ = true;
+    } else if (error_callback_ != nullptr) {
+        error_callback_();
     }
 }
 
@@ -121,6 +126,7 @@ void SerialCommander::processCommand() noexcept
     if (overflow_flag_) {
         const char response[] = "ERR:QUEUE_FULL\n";
         sendResponse(response, sizeof(response) - 1U);
+        if (error_callback_ != nullptr) error_callback_();
         rx_tail_ = rx_head_;
         overflow_flag_ = false;
         serviceTx();
@@ -163,12 +169,15 @@ void SerialCommander::processCommand() noexcept
         ICommandExecutor::Command parsed;
         if (parseCommand(reinterpret_cast<const uint8_t*>(command), length - 1U, parsed) && executor_) {
             const char* response = executor_->executeCommand(parsed) ? "OK\n" : "ERR:EXEC\n";
+            if (response[0] == 'E' && error_callback_ != nullptr) error_callback_();
             sendResponse(response, std::strlen(response));
         } else if (!executor_) {
             const char response[] = "ERR:NOEXEC\n";
+            if (error_callback_ != nullptr) error_callback_();
             sendResponse(response, sizeof(response) - 1U);
         } else {
             const char response[] = "ERR:SYNTAX\n";
+            if (error_callback_ != nullptr) error_callback_();
             sendResponse(response, sizeof(response) - 1U);
         }
     }

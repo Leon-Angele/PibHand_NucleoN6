@@ -64,8 +64,11 @@ public:
 
 class SerialCommander {
 public:
+    using ErrorCallback = void (*)() noexcept;
+
     explicit SerialCommander(HandControl::ISerialPort& port) noexcept;
     void setExecutor(ICommandExecutor* exec) noexcept { executor_ = exec; }
+    void setErrorCallback(ErrorCallback callback) noexcept { error_callback_ = callback; }
 
     bool feedByte(uint8_t b) noexcept;
     void processCommand() noexcept;
@@ -75,6 +78,7 @@ public:
 private:
     HandControl::ISerialPort& port_;
     ICommandExecutor* executor_ = nullptr;
+    ErrorCallback error_callback_ = nullptr;
 
     static constexpr size_t RX_BUF_SIZE = 256;
     static constexpr size_t MAX_COMMAND_LENGTH = 128;

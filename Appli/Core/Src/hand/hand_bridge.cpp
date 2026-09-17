@@ -26,12 +26,40 @@ static bool torque_update_pending = false;
 static uint8_t torque_update_index = 0;
 static uint8_t status_stream_hz = 0;
 static uint32_t status_last_ms = 0;
-static bool feedback_active = false;
-static bool feedback_current_phase = false;
-static uint8_t feedback_index = 0;
-static uint32_t feedback_next_ms = 0;
+static constexpr uint32_t LED_PULSE_MS = 100U;
+static uint32_t blue_led_until_ms = 0;
+static uint32_t red_led_until_ms = 0;
 
 namespace {
+
+void pulseLed(Led_TypeDef led, uint32_t& until_ms) noexcept
+{
+    const uint32_t now = HAL_GetTick();
+    until_ms = now + LED_PULSE_MS;
+    BSP_LED_On(led);
+}
+
+void updateLedPulses(uint32_t now_ms) noexcept
+{
+    if (blue_led_until_ms != 0U && static_cast<int32_t>(now_ms - blue_led_until_ms) >= 0) {
+        BSP_LED_Off(LED_BLUE);
+        blue_led_until_ms = 0U;
+    }
+    if (red_led_until_ms != 0U && static_cast<int32_t>(now_ms - red_led_until_ms) >= 0) {
+        BSP_LED_Off(LED_RED);
+        red_led_until_ms = 0U;
+    }
+}
+
+void signalSerialError() noexcept
+{
+    pulseLed(LED_RED, red_led_until_ms);
+}
+
+void signalPoseAccepted() noexcept
+{
+    pulseLed(LED_BLUE, blue_led_until_ms);
+}
 
 const char* modeName(ControllerMode mode)
 {
@@ -101,13 +129,27 @@ public:
     {
         switch (command.type) {
             case CommandType::Pose:
-                if (command.has_force) return setPoseWithForce(command);
+                if (command.has_force) {
+                    const bool accepted = setPoseWithForce(command);
+                    if (accepted) signalPoseAccepted();
+                    return accepted;
+                }
                 hand.setTargetGrip(command.grip);
+                signalPoseAccepted();
                 return true;
             case CommandType::SinglePosition:
-                if (command.has_force) return hand.setSingleFingerPercentWithForce(
-                    command.finger, command.position_percent, command.force_newton);
-                return hand.setSingleFingerPercent(command.finger, command.position_percent);
+                if (command.has_force) {
+                    const bool accepted = hand.setSingleFingerPercentWithForce(
+                        command.finger, command.position_percent, command.force_newton);
+                    if (accepted) signalPoseAccepted();
+                    return accepted;
+                }
+                {
+                    const bool accepted = hand.setSingleFingerPercent(
+                        command.finger, command.position_percent);
+                    if (accepted) signalPoseAccepted();
+                    return accepted;
+                }
             case CommandType::ForceAll:
                 return hand.setForceAll(command.force_newton);
             case CommandType::ForceFinger:
@@ -163,6 +205,9 @@ extern "C" {
 void hand_bridge_init(void)
 {
     commander.setExecutor(&defaultExecutor);
+    commander.setErrorCallback(&signalSerialError);
+    BSP_LED_Off(LED_BLUE);
+    BSP_LED_Off(LED_RED);
     hand.setTorqueLimit(DEFAULT_TORQUE_LIMIT_PERCENT);
     torque_update_pending = true;
     torque_update_index = 0;
@@ -185,64 +230,19 @@ void hand_bridge_update(void)
 void hand_bridge_service(void)
 {
     servoBus.poll();
+    const uint32_t now = HAL_GetTick();
+    updateLedPulses(now);
+    if (servoBus.getState() == BusState::TIMEOUT) signalSerialError();
 
-    /* Consume one completed feedback transaction. */
-    if (feedback_active) {
-        const Finger finger = static_cast<Finger>(feedback_index);
-        const BusState state = servoBus.getState();
-        if (state == BusState::DATA_READY) {
-            if (feedback_current_phase) {
-                const auto current = servoBus.getReadResult();
-                if (current.has_value()) hand.setActualCurrent(finger, *current, HAL_GetTick());
-            } else {
-                const auto position = servoBus.getPositionResult();
-                if (position.has_value()) {
-                    ControllerStatus status;
-                    hand.getStatus(&status);
-                    hand.setActualFeedback(finger, *position, status.currentMilliamp[feedback_index], HAL_GetTick());
-                }
-            }
-            feedback_active = false;
-            if (feedback_current_phase) {
-                feedback_current_phase = false;
-                feedback_index = static_cast<uint8_t>((feedback_index + 1U) % FINGER_COUNT);
-                feedback_next_ms = HAL_GetTick() + 2U;
-            } else {
-                feedback_current_phase = true;
-                feedback_next_ms = HAL_GetTick() + 2U;
-            }
-        } else if (state == BusState::IDLE) {
-            /* TIMEOUT is recovered by ServoBus::poll(). Skip this sample. */
-            feedback_active = false;
-            if (feedback_current_phase) {
-                feedback_current_phase = false;
-                feedback_index = static_cast<uint8_t>((feedback_index + 1U) % FINGER_COUNT);
-            } else {
-                feedback_current_phase = true;
-            }
-            feedback_next_ms = HAL_GetTick() + 10U;
-        }
-    }
-
-    /* Reserve a short, periodic slot for real servo feedback. */
-    if (!torque_update_pending && !feedback_active && servoBus.getState() == BusState::IDLE &&
-        (HAL_GetTick() >= feedback_next_ms)) {
-        const Finger finger = static_cast<Finger>(feedback_index);
-        feedback_active = feedback_current_phase
-            ? servoBus.startReadCurrent(Hand::getServoID(finger))
-            : servoBus.startReadPosition(Hand::getServoID(finger));
-        if (!feedback_active) feedback_next_ms = HAL_GetTick() + 2U;
-    }
-
-    /* Position output has priority over diagnostics when a feedback transaction is active. */
-    if (!torque_update_pending && !feedback_active &&
-        servoBus.getState() == BusState::IDLE && hand.outputPending()) {
+    if (!torque_update_pending && servoBus.getState() == BusState::IDLE && hand.outputPending()) {
         std::array<uint8_t, FINGER_COUNT> ids{};
         std::array<uint16_t, FINGER_COUNT> positions{};
         std::array<uint16_t, FINGER_COUNT> times{};
         if (hand.copyOutputFrame(ids.data(), positions.data(), times.data(), FINGER_COUNT) &&
             servoBus.syncWritePositions(ids.data(), positions.data(), times.data(), FINGER_COUNT)) {
             hand.markOutputSent();
+        } else {
+            signalSerialError();
         }
     }
 
@@ -252,6 +252,8 @@ void hand_bridge_service(void)
         } else if (servoBus.writeTorqueLimit(
                        Hand::getServoID(static_cast<Finger>(torque_update_index)), hand.torqueLimit())) {
             ++torque_update_index;
+        } else {
+            signalSerialError();
         }
     }
 
