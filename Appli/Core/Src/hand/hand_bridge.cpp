@@ -16,12 +16,21 @@ using namespace HandControl;
 extern UART_HandleTypeDef huart3;
 extern UART_HandleTypeDef hlpuart1;
 
-static Stm32UartDmaPort servoPort(&huart3);
+static feetech::PortHandlerSTM32 servoPort(&huart3);
+static feetech::STSPacketHandler servoPacketHandler(servoPort);
 static Stm32UartDmaPort vcpPort(&hlpuart1);
-static ServoBus servoBus(servoPort);
+static ServoBus servoBus(servoPacketHandler);
 static SerialCommander commander(vcpPort);
 static HandController hand(servoBus);
 
+enum class ServoWriteKind : uint8_t { None, Position, Torque };
+
+static bool servo_port_ready = false;
+static ServoWriteKind servo_write_in_flight = ServoWriteKind::None;
+static uint32_t position_sequence_in_flight = 0;
+static uint8_t torque_index_in_flight = 0;
+static uint32_t torque_generation = 0;
+static uint32_t torque_generation_in_flight = 0;
 static bool torque_update_pending = false;
 static uint8_t torque_update_index = 0;
 static uint8_t status_stream_hz = 0;
@@ -169,6 +178,7 @@ public:
                 return true;
             case CommandType::Torque:
                 hand.setTorqueLimit(command.torque_percent);
+                ++torque_generation;
                 torque_update_pending = true;
                 torque_update_index = 0;
                 return true;
@@ -208,8 +218,10 @@ void hand_bridge_init(void)
     commander.setErrorCallback(&signalSerialError);
     BSP_LED_Off(LED_BLUE);
     BSP_LED_Off(LED_RED);
+    servo_port_ready = servoPort.openPort();
+    if (!servo_port_ready) signalSerialError();
     hand.setTorqueLimit(DEFAULT_TORQUE_LIMIT_PERCENT);
-    torque_update_pending = true;
+    torque_update_pending = servo_port_ready;
     torque_update_index = 0;
 }
 
@@ -232,26 +244,46 @@ void hand_bridge_service(void)
     servoBus.poll();
     const uint32_t now = HAL_GetTick();
     updateLedPulses(now);
-    if (servoBus.getState() == BusState::TIMEOUT) signalSerialError();
+    if (servoBus.getState() == BusState::TIMEOUT) {
+        signalSerialError();
+        servo_write_in_flight = ServoWriteKind::None;
+    } else if (servoBus.getState() == BusState::IDLE) {
+        if (servo_write_in_flight == ServoWriteKind::Position) {
+            hand.markOutputSent(position_sequence_in_flight);
+            servo_write_in_flight = ServoWriteKind::None;
+        } else if (servo_write_in_flight == ServoWriteKind::Torque) {
+            if (torque_generation == torque_generation_in_flight &&
+                torque_update_index == torque_index_in_flight) {
+                ++torque_update_index;
+            }
+            servo_write_in_flight = ServoWriteKind::None;
+        }
+    }
 
-    if (!torque_update_pending && servoBus.getState() == BusState::IDLE && hand.outputPending()) {
+    if (servo_write_in_flight == ServoWriteKind::None && !torque_update_pending &&
+        servoBus.getState() == BusState::IDLE && hand.outputPending()) {
         std::array<uint8_t, FINGER_COUNT> ids{};
         std::array<uint16_t, FINGER_COUNT> positions{};
         std::array<uint16_t, FINGER_COUNT> times{};
+        const uint32_t output_sequence = hand.outputSequence();
         if (hand.copyOutputFrame(ids.data(), positions.data(), times.data(), FINGER_COUNT) &&
             servoBus.syncWritePositions(ids.data(), positions.data(), times.data(), FINGER_COUNT)) {
-            hand.markOutputSent();
+            position_sequence_in_flight = output_sequence;
+            servo_write_in_flight = ServoWriteKind::Position;
         } else {
             signalSerialError();
         }
     }
 
-    if (torque_update_pending && servoBus.getState() == BusState::IDLE) {
+    if (servo_write_in_flight == ServoWriteKind::None && torque_update_pending &&
+        servoBus.getState() == BusState::IDLE) {
         if (torque_update_index >= FINGER_COUNT) {
             torque_update_pending = false;
         } else if (servoBus.writeTorqueLimit(
                        Hand::getServoID(static_cast<Finger>(torque_update_index)), hand.torqueLimit())) {
-            ++torque_update_index;
+            torque_index_in_flight = torque_update_index;
+            torque_generation_in_flight = torque_generation;
+            servo_write_in_flight = ServoWriteKind::Torque;
         } else {
             signalSerialError();
         }
@@ -284,6 +316,10 @@ bool commander_bridge_feed_byte(uint8_t byte)
 void hand_bridge_ping_all_servos(void)
 {
     std::printf("\r\n[BRIDGE] Pinging configured servos...\r\n");
+    if (!servo_port_ready) {
+        std::printf("[BRIDGE] Servo port initialization failed.\r\n\r\n");
+        return;
+    }
     for (size_t i = 0; i < FINGER_COUNT; ++i) {
         const Finger finger = static_cast<Finger>(i);
         const bool online = servoBus.pingServo(Hand::getServoID(finger), 100);
@@ -297,12 +333,24 @@ void hand_bridge_ping_all_servos(void)
 
 void bridge_on_uart_tx(void* huart)
 {
-    Stm32UartDmaPort::onTxComplete(static_cast<UART_HandleTypeDef*>(huart));
+    auto* uart = static_cast<UART_HandleTypeDef*>(huart);
+    Stm32UartDmaPort::onTxComplete(uart);
+    feetech::PortHandlerSTM32::handleTxComplete(uart);
 }
 
 void bridge_on_uart_rx(void* huart)
 {
-    Stm32UartDmaPort::onRxComplete(static_cast<UART_HandleTypeDef*>(huart));
+    auto* uart = static_cast<UART_HandleTypeDef*>(huart);
+    Stm32UartDmaPort::onRxComplete(uart);
+    feetech::PortHandlerSTM32::handleRxComplete(uart);
+}
+
+void bridge_on_uart_error(void* huart)
+{
+    auto* uart = static_cast<UART_HandleTypeDef*>(huart);
+    Stm32UartDmaPort::onError(uart);
+    feetech::PortHandlerSTM32::handleUartError(uart);
+    if (uart == &hlpuart1) signalSerialError();
 }
 
 } // extern "C"

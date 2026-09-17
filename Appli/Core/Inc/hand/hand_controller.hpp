@@ -68,7 +68,10 @@ public:
     bool outputPending() const { return output_pending_; }
     bool copyOutputFrame(uint8_t* ids, uint16_t* positions, uint16_t* times,
                          size_t count) const;
-    void markOutputSent() { output_pending_ = false; }
+    uint32_t outputSequence() const { return sequence_; }
+    void markOutputSent(uint32_t sequence) {
+        if (sequence_ == sequence) output_pending_ = false;
+    }
 
     void setActualFeedback(Finger finger, uint16_t position, int32_t current_mA,
                            uint32_t now_ms);

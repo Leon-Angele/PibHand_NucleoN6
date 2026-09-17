@@ -1,371 +1,200 @@
 /**
  * @file servo.cpp
- * @brief Non-blocking async servo driver and protocol implementation.
- * @author Leon Angele
- * @date 2026-05-08
- *
- * Provides `Stm32UartDmaPort` and `ServoBus` classes implementing
- * an RX-before-TX protocol for STS3215 servos.
+ * @brief UART DMA adapter and FeetechSDK-backed servo facade.
  */
 
 #include "hand/servo.hpp"
 #include "hand/hand_config.hpp"
-#include <cstdio>
-#include <cstring>
+
+extern "C" CACHEAXI_HandleTypeDef hcacheaxi;
 
 namespace HandControl {
 
-// ============================================================================
-// STATIC STORAGE (32-byte aligned, non-cacheable for DMA)
-// ============================================================================
-
-// Stm32UartDmaPort registry
-Stm32UartDmaPort* Stm32UartDmaPort::instances_[Stm32UartDmaPort::MAX_INSTANCES] = {nullptr};
-uint8_t Stm32UartDmaPort::instance_count_ = 0;
-
-// ServoBus buffers (non-cacheable for DMA coherency)
-__attribute__((section(".noncacheable"), aligned(32))) 
-uint8_t ServoBus::tx_buf_storage_[ServoBus::TX_BUF_SIZE];
-
-__attribute__((section(".noncacheable"), aligned(32))) 
-uint8_t ServoBus::rx_buf_storage_[ServoBus::RX_BUF_SIZE];
-
-// ============================================================================
-// LAYER 1: HARDWARE ABSTRACTION - Stm32UartDmaPort
-// ============================================================================
+Stm32UartDmaPort* Stm32UartDmaPort::instances_[Stm32UartDmaPort::MAX_INSTANCES] = {};
+uint8_t Stm32UartDmaPort::instance_count_ = 0u;
 
 Stm32UartDmaPort::Stm32UartDmaPort(UART_HandleTypeDef* huart)
     : huart_(huart), tx_done_(true), rx_done_(false)
 {
-    // Register this instance for callback routing
     if (instance_count_ < MAX_INSTANCES) {
         instances_[instance_count_++] = this;
     }
 }
 
-/**
- * @brief Construct a new Stm32UartDmaPort instance.
- * @param huart Pointer to HAL UART handle
- */
-
 bool Stm32UartDmaPort::transmitDMA(const uint8_t* data, uint16_t length)
 {
-    if (!data || length == 0) return false;
-    
-    // D-Cache clean BEFORE TX (ensure data is written to RAM for DMA)
-    SCB_CleanDCache_by_Addr((uint32_t*)data, length);
-    
-    // Start DMA transmission (non-blocking, returns immediately)
+    if (data == nullptr || length == 0u) return false;
+
+    SCB_CleanDCache_by_Addr(
+        reinterpret_cast<uint32_t*>(const_cast<uint8_t*>(data)), length);
+    if (HAL_CACHEAXI_CleanByAddr(
+            &hcacheaxi,
+            reinterpret_cast<uint32_t*>(const_cast<uint8_t*>(data)), length) != HAL_OK) {
+        return false;
+    }
     tx_done_ = false;
-    HAL_StatusTypeDef ret = HAL_UART_Transmit_DMA(huart_, const_cast<uint8_t*>(data), length);
-    
-    if (ret != HAL_OK) {
-        HAND_DEBUG("TX DMA failed: %d", ret);
+    const HAL_StatusTypeDef result =
+        HAL_UART_Transmit_DMA(huart_, const_cast<uint8_t*>(data), length);
+    if (result != HAL_OK) {
+        HAND_DEBUG("TX DMA failed: %d", result);
         tx_done_ = true;
         return false;
     }
-    
     return true;
 }
-
-/**
- * @brief Start a non-blocking DMA transmit.
- * @param data Pointer to data buffer
- * @param length Number of bytes to send
- * @return true if DMA started successfully
- */
 
 bool Stm32UartDmaPort::receiveDMA(uint8_t* buffer, uint16_t length)
 {
-    if (!buffer || length == 0) return false;
-    
-    // D-Cache invalidate BEFORE RX (prevent reading stale cached data after DMA)
-    SCB_InvalidateDCache_by_Addr((uint32_t*)buffer, length);
-    
-    // Start DMA reception (non-blocking, returns immediately)
+    if (buffer == nullptr || length == 0u) return false;
+
+    SCB_CleanInvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(buffer), length);
+    if (HAL_CACHEAXI_CleanInvalidByAddr(
+            &hcacheaxi, reinterpret_cast<uint32_t*>(buffer), length) != HAL_OK) {
+        return false;
+    }
     rx_done_ = false;
-    HAL_StatusTypeDef ret = HAL_UART_Receive_DMA(huart_, buffer, length);
-    
-    if (ret != HAL_OK) {
-        HAND_DEBUG("RX DMA failed: %d", ret);
+    const HAL_StatusTypeDef result = HAL_UART_Receive_DMA(huart_, buffer, length);
+    if (result != HAL_OK) {
+        HAND_DEBUG("RX DMA failed: %d", result);
         rx_done_ = true;
         return false;
     }
-    
     return true;
 }
-
-/**
- * @brief Start a non-blocking DMA receive into provided buffer.
- * @param buffer Pointer to receive buffer
- * @param length Number of bytes to receive
- * @return true if DMA started successfully
- */
 
 void Stm32UartDmaPort::process()
 {
-    // Non-blocking: no busy-waiting, just state checks
-    // Echo handling could go here if needed
 }
-
-/**
- * @brief Non-blocking port housekeeping (timeouts, echo handling).
- */
 
 void Stm32UartDmaPort::abortRx()
 {
-    HAL_UART_AbortReceive(huart_);
+    (void)HAL_UART_AbortReceive(huart_);
     rx_done_ = true;
 }
 
-/**
- * @brief Abort an ongoing RX operation (used on timeouts).
- */
-
 void Stm32UartDmaPort::onTxComplete(UART_HandleTypeDef* huart)
 {
-    // Route callback to correct instance
-    for (uint8_t i = 0; i < instance_count_; ++i) {
-        if (instances_[i] && instances_[i]->huart_ == huart) {
+    for (uint8_t i = 0u; i < instance_count_; ++i) {
+        if (instances_[i] != nullptr && instances_[i]->huart_ == huart) {
             instances_[i]->tx_done_ = true;
-            break;
+            return;
         }
     }
 }
-
-/**
- * @brief Static callback router for TX complete events from HAL.
- * @param huart UART handle received from HAL
- */
 
 void Stm32UartDmaPort::onRxComplete(UART_HandleTypeDef* huart)
 {
-    // Route callback to correct instance
-    for (uint8_t i = 0; i < instance_count_; ++i) {
-        if (instances_[i] && instances_[i]->huart_ == huart) {
+    for (uint8_t i = 0u; i < instance_count_; ++i) {
+        if (instances_[i] != nullptr && instances_[i]->huart_ == huart) {
             instances_[i]->rx_done_ = true;
-            break;
+            return;
         }
     }
 }
 
-/**
- * @brief Static callback router for RX complete events from HAL.
- * @param huart UART handle received from HAL
- */
+void Stm32UartDmaPort::onError(UART_HandleTypeDef* huart)
+{
+    for (uint8_t i = 0u; i < instance_count_; ++i) {
+        if (instances_[i] != nullptr && instances_[i]->huart_ == huart) {
+            instances_[i]->tx_done_ = true;
+            instances_[i]->rx_done_ = true;
+            return;
+        }
+    }
+}
 
-// ============================================================================
-// LAYER 2: PROTOCOL LAYER - ServoBus
-// ============================================================================
-
-ServoBus::ServoBus(ISerialPort& port)
-    : port_(port), state_(BusState::IDLE), tx_buf_(tx_buf_storage_), rx_buf_(rx_buf_storage_)
+ServoBus::ServoBus(feetech::STSPacketHandler& packet_handler)
+    : packet_handler_(packet_handler)
 {
 }
 
-/**
- * @brief Construct a new ServoBus instance.
- * @param port Underlying serial port implementation
- */
+void ServoBus::resetState()
+{
+    packet_handler_.reset();
+    state_ = BusState::IDLE;
+}
 
 void ServoBus::poll()
 {
-    switch (state_) {
-        case BusState::IDLE:
-            // Nothing to do
-            break;
-            
-        case BusState::TX_BUSY:
-            // Wait for TX completion
-            if (port_.isTxDone()) {
-                state_ = BusState::IDLE;
-            }
-            // Check timeout (optional)
-            if ((HAL_GetTick() - operation_start_ms_) > 100) {
-                HAND_DEBUG("TX timeout");
-                state_ = BusState::TIMEOUT;
-            }
-            break;
-            
-        case BusState::WAIT_RX:
-            // Wait for RX completion
-            if (port_.isRxDone()) {
-                // Validate response
-                if (validateResponse(last_read_id_, expected_rx_len_ - 6)) {
-                    state_ = BusState::DATA_READY;
-                } else {
-                    HAND_DEBUG("RX validation failed (ID=%d)", last_read_id_);
-                    state_ = BusState::TIMEOUT;
-                }
-            }
-            // Check timeout (10ms as per spec)
-            else if ((HAL_GetTick() - operation_start_ms_) > 10) {
-                // Global rate-limited logging: only log every 10 seconds total
-                uint32_t now = HAL_GetTick();
-                static uint32_t last_timeout_log_ms = 0;
-                constexpr uint32_t TIMEOUT_LOG_INTERVAL_MS = 10000; // 10s
-                if ((now - last_timeout_log_ms) > TIMEOUT_LOG_INTERVAL_MS) {
-                    HAND_DEBUG("RX timeout (ID=%d)", last_read_id_);
-                    last_timeout_log_ms = now;
-                }
-                port_.abortRx();
-                state_ = BusState::TIMEOUT;
-            }
-            break;
-            
-        case BusState::DATA_READY:
-        case BusState::TIMEOUT:
-            // Runtime callers can recover without leaving the bus latched.
-            port_.abortRx();
+    if (state_ == BusState::TIMEOUT) {
+        resetState();
+        return;
+    }
+    if (state_ == BusState::DATA_READY) return;
+
+    packet_handler_.poll();
+    switch (packet_handler_.state()) {
+        case feetech::PacketState::Idle:
             state_ = BusState::IDLE;
             break;
+        case feetech::PacketState::TxBusy:
+            state_ = BusState::TX_BUSY;
+            break;
+        case feetech::PacketState::WaitRx:
+            state_ = BusState::WAIT_RX;
+            break;
+        case feetech::PacketState::DataReady:
+            state_ = BusState::DATA_READY;
+            break;
+        case feetech::PacketState::Error:
+            state_ = BusState::TIMEOUT;
+            break;
     }
-    
-    // Non-blocking process
-    port_.process();
 }
 
-/**
- * @brief Poll the servo bus state machine (non-blocking).
- *
- * Handles TX/RX completion and timeouts. Call from main loop.
- */
-
-bool ServoBus::syncWritePositions(const uint8_t* ids, const uint16_t* positions, 
+bool ServoBus::syncWritePositions(const uint8_t* ids, const uint16_t* positions,
                                   const uint16_t* times_ms, size_t count)
 {
-    if (state_ != BusState::IDLE || !ids || !positions || !times_ms || count == 0) {
+    if (state_ != BusState::IDLE ||
+        !packet_handler_.startSyncWritePositions(ids, positions, times_ms, count)) {
         return false;
     }
-    
-    // Build SyncWrite packet
-    size_t len = buildSyncWritePacket(ids, positions, times_ms, count, tx_buf_);
-    if (len == 0) return false;
-    
-    // Start TX (non-blocking)
-    if (!port_.transmitDMA(tx_buf_, len)) {
-        return false;
-    }
-    
     state_ = BusState::TX_BUSY;
-    operation_start_ms_ = HAL_GetTick();
     return true;
 }
 
-/**
- * @brief Send a SyncWrite packet to multiple servos (non-blocking).
- * @param ids Array of servo IDs
- * @param positions Array of positions (0..4095)
- * @param times_ms Array of move times in ms
- * @param count Number of servos
- * @return true if command started
- */
-
 bool ServoBus::writeRegister(uint8_t id, uint8_t reg, const uint8_t* data, uint8_t len)
 {
-    if (state_ != BusState::IDLE || !data) {
+    if (state_ != BusState::IDLE ||
+        !packet_handler_.startWriteBytes(id, reg, data, len, false)) {
         return false;
     }
-    
-    // Build Write packet
-    size_t pkt_len = buildWritePacket(id, reg, data, len, tx_buf_);
-    if (pkt_len == 0) return false;
-    
-    // Start TX (non-blocking)
-    if (!port_.transmitDMA(tx_buf_, pkt_len)) {
-        return false;
-    }
-    
     state_ = BusState::TX_BUSY;
-    operation_start_ms_ = HAL_GetTick();
     return true;
 }
 
 bool ServoBus::writeTorqueLimit(uint8_t id, uint16_t percent)
 {
-    if (percent > 100U) percent = 100U;
-    const uint16_t raw = static_cast<uint16_t>(percent * 10U);
+    if (percent > 100u) percent = 100u;
+    const uint16_t raw = static_cast<uint16_t>(percent * 10u);
     const uint8_t data[2] = {
-        static_cast<uint8_t>(raw & 0xFFU),
-        static_cast<uint8_t>((raw >> 8U) & 0xFFU)
+        static_cast<uint8_t>(raw & 0xFFu),
+        static_cast<uint8_t>((raw >> 8u) & 0xFFu),
     };
-    return writeRegister(id, static_cast<uint8_t>(Reg::TorqueLimit), data, 2);
+    return writeRegister(id, static_cast<uint8_t>(Reg::TorqueLimit), data, sizeof(data));
 }
-
-/**
- * @brief Write a register to a single servo (non-blocking).
- */
 
 bool ServoBus::startReadCurrent(uint8_t id)
 {
-    if (state_ != BusState::IDLE) {
+    if (state_ != BusState::IDLE ||
+        !packet_handler_.startReadBytes(id, static_cast<uint8_t>(Reg::Current), 2u)) {
         return false;
     }
-    
-    // === RX-before-TX for D-Cache coherency ===
-    
-    // Step 1: Calculate expected RX length (Status response: 0xFF 0xFF ID Len Error Data... Checksum)
-    // For Current (2 bytes): base=6 + data=2 = 8 bytes
-    expected_rx_len_ = 6 + 2;
-    last_read_id_ = id;
     last_read_reg_ = Reg::Current;
-    
-    // Step 2: Invalidate D-Cache for RX buffer BEFORE starting DMA
-    SCB_InvalidateDCache_by_Addr((uint32_t*)rx_buf_, expected_rx_len_);
-    
-    // Step 3: Start RX DMA FIRST (listening in background)
-    if (!port_.receiveDMA(rx_buf_, expected_rx_len_)) {
-        HAND_DEBUG("RX DMA start failed (ID=%d)", id);
-        return false;
-    }
-    
-    // Step 4: Build and send Read command
-    size_t tx_len = buildReadPacket(id, static_cast<uint8_t>(Reg::Current), 2, tx_buf_);
-    if (tx_len == 0) {
-        port_.abortRx();
-        return false;
-    }
-    
-    // Step 5: Start TX DMA (command goes out)
-    if (!port_.transmitDMA(tx_buf_, tx_len)) {
-        port_.abortRx();
-        return false;
-    }
-    
-    // Step 6: Enter WAIT_RX state and return immediately (non-blocking!)
-    state_ = BusState::WAIT_RX;
-    operation_start_ms_ = HAL_GetTick();
-    
+    state_ = BusState::TX_BUSY;
     return true;
 }
 
 bool ServoBus::startReadPosition(uint8_t id)
 {
-    if (state_ != BusState::IDLE) return false;
-
-    expected_rx_len_ = 6 + 2;
-    last_read_id_ = id;
-    last_read_reg_ = Reg::PosRead;
-
-    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(rx_buf_), expected_rx_len_);
-    if (!port_.receiveDMA(rx_buf_, expected_rx_len_)) return false;
-
-    const size_t tx_len = buildReadPacket(id, static_cast<uint8_t>(Reg::PosRead), 2, tx_buf_);
-    if (tx_len == 0 || !port_.transmitDMA(tx_buf_, tx_len)) {
-        port_.abortRx();
+    if (state_ != BusState::IDLE ||
+        !packet_handler_.startReadBytes(id, static_cast<uint8_t>(Reg::PosRead), 2u)) {
         return false;
     }
-
-    state_ = BusState::WAIT_RX;
-    operation_start_ms_ = HAL_GetTick();
+    last_read_reg_ = Reg::PosRead;
+    state_ = BusState::TX_BUSY;
     return true;
 }
-
-/**
- * @brief Start asynchronous read of the Current register using RX-before-TX.
- * @param id Servo ID
- * @return true if read started successfully
- */
 
 std::optional<int32_t> ServoBus::getReadResult()
 {
@@ -373,15 +202,15 @@ std::optional<int32_t> ServoBus::getReadResult()
         return std::nullopt;
     }
 
-    // Extract raw data from response packet: 0xFF 0xFF ID Len Error [Data_L Data_H] Checksum
-    // Data is little-endian at offset 5
-    int16_t raw = static_cast<int16_t>(rx_buf_[5] | (rx_buf_[6] << 8));
-
-    // Datasheet: 1 unit = 6.5 mA -> multiply by 6.5
-    // Avoid floats: 6.5 = 13/2 => mA = raw * 13 / 2
-    int32_t mA = (static_cast<int32_t>(raw) * 13) / 2;
-    state_ = BusState::IDLE;
-    return mA;
+    uint8_t data[2] = {};
+    if (!packet_handler_.copyResponse(data, sizeof(data))) {
+        resetState();
+        return std::nullopt;
+    }
+    const int16_t raw = static_cast<int16_t>(
+        static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8u));
+    resetState();
+    return (static_cast<int32_t>(raw) * 13) / 2;
 }
 
 std::optional<uint16_t> ServoBus::getPositionResult()
@@ -390,250 +219,32 @@ std::optional<uint16_t> ServoBus::getPositionResult()
         return std::nullopt;
     }
 
-    const uint16_t position = static_cast<uint16_t>(rx_buf_[5] |
-                                                     (static_cast<uint16_t>(rx_buf_[6]) << 8U));
-    state_ = BusState::IDLE;
+    uint8_t data[2] = {};
+    if (!packet_handler_.copyResponse(data, sizeof(data))) {
+        resetState();
+        return std::nullopt;
+    }
+    const uint16_t position = static_cast<uint16_t>(
+        static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8u));
+    resetState();
     return position;
 }
 
-/**
- * @brief Retrieve result of a completed async read.
- * @return std::optional<int16_t> Measured current in mA, or std::nullopt
- */
-
-// ============================================================================
-// PROTOCOL HELPERS
-// ============================================================================
-
-uint8_t ServoBus::calcChecksum(const uint8_t* data, size_t len)
-{
-    // STS3215 Checksum: ~(ID + Length + Instruction + Params...) & 0xFF
-    // 'data' points to ID (skip 0xFF 0xFF header)
-    uint16_t sum = 0;
-    for (size_t i = 0; i < len; ++i) {
-        sum += data[i];
-    }
-    return static_cast<uint8_t>(~sum & 0xFF);
-}
-
-/**
- * @brief Calculate protocol checksum for a packet (STS3215 style).
- */
-
-bool ServoBus::validateResponse(uint8_t expected_id, uint8_t data_len)
-{
-    // Response format: 0xFF 0xFF ID Length Error Data... Checksum
-    // Length = data_len + 2 (Error + Checksum)
-    
-    // Check header
-    if (rx_buf_[0] != 0xFF || rx_buf_[1] != 0xFF) {
-        HAND_DEBUG("Invalid header");
-        return false;
-    }
-    
-    // Check ID
-    if (rx_buf_[2] != expected_id) {
-        HAND_DEBUG("ID mismatch: expected=%d, got=%d", expected_id, rx_buf_[2]);
-        return false;
-    }
-    
-    // Check Length
-    uint8_t expected_len = data_len + 2;
-    if (rx_buf_[3] != expected_len) {
-        HAND_DEBUG("Length mismatch: expected=%d, got=%d", expected_len, rx_buf_[3]);
-        return false;
-    }
-    
-    // Check Error byte
-    if (rx_buf_[4] != 0) {
-        HAND_DEBUG("Servo error: 0x%02X", rx_buf_[4]);
-        // Continue anyway - some errors are non-fatal
-    }
-    
-    // Verify checksum
-    // Checksum is calculated on: ID + Length + Error + Data...
-    uint8_t calc_cs = calcChecksum(&rx_buf_[2], 3 + data_len);
-    uint8_t recv_cs = rx_buf_[5 + data_len];
-    
-    if (calc_cs != recv_cs) {
-        HAND_DEBUG("Checksum mismatch: calc=0x%02X, recv=0x%02X", calc_cs, recv_cs);
-        return false;
-    }
-    
-    return true;
-}
-
-/**
- * @brief Validate a received status packet for expected ID/length/checksum.
- * @param expected_id Expected servo ID
- * @param data_len Expected payload data length
- * @return true if packet is valid
- */
-
-size_t ServoBus::buildReadPacket(uint8_t id, uint8_t reg, uint8_t len, uint8_t* out_buf)
-{
-    // Packet format: 0xFF 0xFF ID Length Instruction Reg DataLen Checksum
-    // Length = 4 (Instruction + Reg + DataLen + Checksum)
-    
-    out_buf[0] = 0xFF;
-    out_buf[1] = 0xFF;
-    out_buf[2] = id;
-    out_buf[3] = 4;  // Length = Param_Count(2) + 2
-    out_buf[4] = static_cast<uint8_t>(Instruction::Read);
-    out_buf[5] = reg;
-    out_buf[6] = len;
-    out_buf[7] = calcChecksum(&out_buf[2], 5);  // ID + Length + Instruction + Params
-    
-    return 8;
-}
-
-/**
- * @brief Build a Read instruction packet.
- */
-
-size_t ServoBus::buildWritePacket(uint8_t id, uint8_t reg, const uint8_t* data, uint8_t len, uint8_t* out_buf)
-{
-    // Packet format: 0xFF 0xFF ID Length Instruction Reg Data... Checksum
-    // Length = Param_Count(1 + len) + 2
-    
-    out_buf[0] = 0xFF;
-    out_buf[1] = 0xFF;
-    out_buf[2] = id;
-    out_buf[3] = (1 + len) + 2;  // Length
-    out_buf[4] = static_cast<uint8_t>(Instruction::Write);
-    out_buf[5] = reg;
-    
-    // Copy data
-    for (uint8_t i = 0; i < len; ++i) {
-        out_buf[6 + i] = data[i];
-    }
-    
-    // Checksum
-    out_buf[6 + len] = calcChecksum(&out_buf[2], 4 + len);
-    
-    return 7 + len;
-}
-
-/**
- * @brief Build a Write instruction packet.
- */
-
-size_t ServoBus::buildSyncWritePacket(const uint8_t* ids, const uint16_t* positions, 
-                                      const uint16_t* times_ms, size_t count, uint8_t* out_buf)
-{
-    // SyncWrite format: 0xFF 0xFF ID(0xFE) Length Instruction StartReg DataLen [ID Pos_L Pos_H Time_L Time_H]... Checksum
-    // Length = Param_Count(2 + count*5) + 2
-    
-    if (count == 0 || count > 12) return 0;  // Sanity check
-    
-    out_buf[0] = 0xFF;
-    out_buf[1] = 0xFF;
-    out_buf[2] = 0xFE;  // Broadcast ID
-    out_buf[3] = (2 + count * 5) + 2;  // Length
-    out_buf[4] = static_cast<uint8_t>(Instruction::SyncWrite);
-    out_buf[5] = static_cast<uint8_t>(Reg::Position);  // Start register (0x2A)
-    out_buf[6] = 4;  // Data length per servo (Pos_L, Pos_H, Time_L, Time_H)
-    
-    // Add data for each servo
-    size_t offset = 7;
-    for (size_t i = 0; i < count; ++i) {
-        out_buf[offset++] = ids[i];
-        out_buf[offset++] = static_cast<uint8_t>(positions[i] & 0xFF);       // Pos_L
-        out_buf[offset++] = static_cast<uint8_t>((positions[i] >> 8) & 0xFF); // Pos_H
-        out_buf[offset++] = static_cast<uint8_t>(times_ms[i] & 0xFF);        // Time_L
-        out_buf[offset++] = static_cast<uint8_t>((times_ms[i] >> 8) & 0xFF); // Time_H
-    }
-    
-    // Checksum
-    out_buf[offset] = calcChecksum(&out_buf[2], offset - 2);
-    
-    return offset + 1;
-}
-
-/**
- * @brief Build a SyncWrite broadcast packet for multiple servos.
- */
-
 bool ServoBus::pingServo(uint8_t id, uint32_t timeout_ms)
 {
-    // Reset bus state if not idle (safety for init-time use)
-    if (state_ != BusState::IDLE) {
-        HAND_DEBUG("Ping: Bus not idle, resetting state");
-        state_ = BusState::IDLE;
-        HAL_Delay(10);  // Short delay to ensure bus is settled
+    if (state_ != BusState::IDLE) resetState();
+    if (!packet_handler_.startPing(id, timeout_ms)) return false;
+
+    state_ = BusState::TX_BUSY;
+    while (packet_handler_.state() == feetech::PacketState::TxBusy ||
+           packet_handler_.state() == feetech::PacketState::WaitRx) {
+        packet_handler_.poll();
+        HAL_Delay(1u);
     }
-    
-    // Expected PING response: 0xFF 0xFF ID Len Error Checksum (6 bytes)
-    const uint16_t expected_rx_len = 6;
-    
-    // Use existing non-cacheable buffers (tx_buf_ and rx_buf_)
-    // Build PING packet directly into tx_buf_
-    size_t tx_len = buildPingPacket(id, tx_buf_);
-    if (tx_len == 0) return false;
-    
-    // D-Cache clean for TX buffer (already in non-cacheable section, but be safe)
-    SCB_CleanDCache_by_Addr((uint32_t*)tx_buf_, tx_len);
-    
-    // D-Cache invalidate for RX buffer BEFORE starting DMA
-    SCB_InvalidateDCache_by_Addr((uint32_t*)rx_buf_, expected_rx_len);
-    
-    // Start RX DMA (listening for response)
-    if (!port_.receiveDMA(rx_buf_, expected_rx_len)) {
-        HAND_DEBUG("Ping: RX DMA start failed for ID %d", id);
-        return false;
-    }
-    
-    // Start TX DMA (send PING command)
-    if (!port_.transmitDMA(tx_buf_, tx_len)) {
-        HAND_DEBUG("Ping: TX DMA start failed for ID %d", id);
-        port_.abortRx();
-        return false;
-    }
-    
-    // Blocking wait for response with timeout
-    uint32_t start = HAL_GetTick();
-    while (!port_.isRxDone()) {
-        if ((HAL_GetTick() - start) > timeout_ms) {
-            port_.abortRx();
-            HAND_DEBUG("Ping: Timeout for ID %d", id);
-            return false;  // Timeout
-        }
-        HAL_Delay(1);  // Short delay to prevent busy-waiting
-    }
-    
-    // D-Cache invalidate AFTER RX complete to ensure fresh data
-    SCB_InvalidateDCache_by_Addr((uint32_t*)rx_buf_, expected_rx_len);
-    
-    // Validate response (PING response has 0 data bytes)
-    bool valid = validateResponse(id, 0);
-    
-    // Small delay before returning to allow bus to settle
-    HAL_Delay(5);
-    
-    return valid;
+
+    const bool success = packet_handler_.state() == feetech::PacketState::DataReady;
+    resetState();
+    return success;
 }
-
-/**
- * @brief Blocking PING command to test servo connectivity (for init only).
- */
-
-size_t ServoBus::buildPingPacket(uint8_t id, uint8_t* out_buf)
-{
-    // PING packet format: 0xFF 0xFF ID Length Instruction Checksum
-    // Length = 2 (Instruction + Checksum)
-    
-    out_buf[0] = 0xFF;
-    out_buf[1] = 0xFF;
-    out_buf[2] = id;
-    out_buf[3] = 2;  // Length = Instruction + Checksum
-    out_buf[4] = static_cast<uint8_t>(Instruction::Ping);
-    out_buf[5] = calcChecksum(&out_buf[2], 3);  // ID + Length + Instruction
-    
-    return 6;
-}
-
-/**
- * @brief Build a PING instruction packet.
- */
 
 } // namespace HandControl

@@ -19,6 +19,7 @@ void commander_bridge_process(void);
 
 void bridge_on_uart_tx(void* huart);
 void bridge_on_uart_rx(void* huart);
+void bridge_on_uart_error(void* huart);
 
 #ifdef __cplusplus
 }

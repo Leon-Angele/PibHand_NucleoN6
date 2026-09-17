@@ -81,6 +81,7 @@ static uint32_t vcp_rx_last_pos = 0;
 
 // VCP TX DMA state
 static volatile uint8_t vcp_tx_busy = 0;
+static volatile uint8_t vcp_rx_restart_pending = 0;
 
 /* USER CODE END PV */
 
@@ -102,6 +103,24 @@ void PeriphCommonClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static HAL_StatusTypeDef VCP_PrepareRxDma(void)
+{
+  SCB_CleanInvalidateDCache_by_Addr((uint32_t *)vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);
+  return HAL_CACHEAXI_CleanInvalidByAddr(
+      &hcacheaxi, (uint32_t *)vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);
+}
+
+static HAL_StatusTypeDef VCP_CompleteRxRange(uint32_t offset, uint32_t length)
+{
+  uint32_t *address = (uint32_t *)&vcp_rx_dma_buffer[offset];
+  HAL_StatusTypeDef status = HAL_CACHEAXI_CleanInvalidByAddr(&hcacheaxi, address, length);
+  if (status == HAL_OK)
+  {
+    SCB_InvalidateDCache_by_Addr(address, (int32_t)length);
+  }
+  return status;
+}
 
 /* USER CODE END 0 */
 
@@ -162,7 +181,11 @@ int main(void)
 #endif
 
   // Start VCP RX DMA in circular mode for continuous reception
-  HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);
+  if (VCP_PrepareRxDma() != HAL_OK ||
+      HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   // ADC DMA is started before TIM6; the TIM6 update event is the fixed 500 Hz tick.
   if (!FSR_Start(&hadc1, &htim6))
@@ -180,6 +203,22 @@ int main(void)
     as5600_update();
 #endif
 
+    if (vcp_rx_restart_pending != 0U)
+    {
+      (void)HAL_UART_AbortReceive(&hlpuart1);
+      vcp_rx_last_pos = 0U;
+      if (VCP_PrepareRxDma() == HAL_OK &&
+          HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE) == HAL_OK)
+      {
+        vcp_rx_restart_pending = 0U;
+      }
+      else
+      {
+        hand_bridge_service();
+        continue;
+      }
+    }
+
     // Process VCP RX from a restarted normal DMA block. GPDMA on STM32N6
     // uses linked-list circular mode for ADC, but LPUART RX is a normal node.
     const uint32_t remaining = __HAL_DMA_GET_COUNTER(hlpuart1.hdmarx);
@@ -187,16 +226,22 @@ int main(void)
     const uint32_t current_pos = block_complete
                                ? VCP_RX_BUF_SIZE
                                : (VCP_RX_BUF_SIZE - remaining);
-    while (vcp_rx_last_pos != current_pos) {
-      // D-Cache invalidate for this byte (ensure fresh data from DMA)
-      SCB_InvalidateDCache_by_Addr((uint32_t*)&vcp_rx_dma_buffer[vcp_rx_last_pos], 1);
-      commander_bridge_feed_byte(vcp_rx_dma_buffer[vcp_rx_last_pos]);
-      vcp_rx_last_pos = (vcp_rx_last_pos + 1) % VCP_RX_BUF_SIZE;
+    if (current_pos > vcp_rx_last_pos &&
+        VCP_CompleteRxRange(vcp_rx_last_pos, current_pos - vcp_rx_last_pos) == HAL_OK)
+    {
+      while (vcp_rx_last_pos < current_pos)
+      {
+        commander_bridge_feed_byte(vcp_rx_dma_buffer[vcp_rx_last_pos++]);
+      }
     }
     if (block_complete)
     {
       vcp_rx_last_pos = 0;
-      (void)HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE);
+      if (VCP_PrepareRxDma() != HAL_OK ||
+          HAL_UART_Receive_DMA(&hlpuart1, vcp_rx_dma_buffer, VCP_RX_BUF_SIZE) != HAL_OK)
+      {
+        vcp_rx_restart_pending = 1U;
+      }
     }
     
     // Process commands, bus work and queued VCP responses from main context.
@@ -814,6 +859,16 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     // USART3 (servo bus): DMA RX completion routed to Stm32UartDmaPort
     bridge_on_uart_rx(huart);
   }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == LPUART1)
+  {
+    vcp_tx_busy = 0U;
+    vcp_rx_restart_pending = 1U;
+  }
+  bridge_on_uart_error(huart);
 }
 
 void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)

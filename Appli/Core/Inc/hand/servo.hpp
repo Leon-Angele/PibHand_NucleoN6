@@ -1,19 +1,19 @@
 /**
  * @file servo.hpp
- * @brief Non-blocking asynchronous servo driver for STS3215 servos.
+ * @brief Non-blocking STS3215 facade backed by the FeetechSDK.
  * @author Leon Angele
  * @date 2026-05-08
  *
- * Architecture: 3-Layer system with strict non-blocking design + RX-before-TX
- * for D-Cache coherency on Cortex-M55.
- *
- * Provides Stm32UartDmaPort (DMA-based UART wrapper) and ServoBus (STS3215 protocol).
+ * Stm32UartDmaPort remains the generic DMA UART used by the VCP commander.
+ * ServoBus delegates servo communication to the FeetechSDK.
  */
 #ifndef SERVO_HPP
 #define SERVO_HPP
 
 #include "main.h"
+#include "sts_packet_handler.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -32,16 +32,6 @@ enum class BusState : uint8_t {
     WAIT_RX,     // Waiting for servo response
     DATA_READY,  // Response received and validated
     TIMEOUT      // Response timeout occurred
-};
-
-/**
- * @brief STS3215 Protocol Instructions
- */
-enum class Instruction : uint8_t {
-    Ping      = 0x01,
-    Read      = 0x02,
-    Write     = 0x03,
-    SyncWrite = 0x83
 };
 
 /**
@@ -122,6 +112,7 @@ public:
     // Called from HAL callbacks (static routing)
     static void onTxComplete(UART_HandleTypeDef* huart);
     static void onRxComplete(UART_HandleTypeDef* huart);
+    static void onError(UART_HandleTypeDef* huart);
     
     // Abort RX (for timeouts)
     void abortRx();
@@ -142,16 +133,15 @@ private:
 // ============================================================================
 
 /**
- * @brief Async servo bus with non-blocking state machine
- * Implements RX-before-TX for reads to ensure D-Cache coherency
+ * @brief Stable hand-control facade around the asynchronous FeetechSDK.
  */
 class ServoBus {
 public:
-    explicit ServoBus(ISerialPort& port);
+    explicit ServoBus(feetech::STSPacketHandler& packet_handler);
     
     // State machine
     BusState getState() const { return state_; }
-    void resetState() { state_ = BusState::IDLE; }
+    void resetState();
     
     /**
      * @brief Non-blocking poll - checks for RX completion, timeouts, etc.
@@ -217,33 +207,9 @@ public:
     bool pingServo(uint8_t id, uint32_t timeout_ms = 50);
 
 private:
-    ISerialPort& port_;
+    feetech::STSPacketHandler& packet_handler_;
     BusState state_ = BusState::IDLE;
-    uint32_t operation_start_ms_ = 0;
-    
-    // Buffers (32-byte aligned for D-Cache coherency on Cortex-M55)
-    static constexpr size_t TX_BUF_SIZE = 128;
-    static constexpr size_t RX_BUF_SIZE = 64;
-    
-    alignas(32) static uint8_t tx_buf_storage_[TX_BUF_SIZE];
-    alignas(32) static uint8_t rx_buf_storage_[RX_BUF_SIZE];
-    
-    uint8_t* tx_buf_;
-    uint8_t* rx_buf_;
-    uint16_t expected_rx_len_ = 0;
-    uint8_t last_read_id_ = 0;
     Reg last_read_reg_ = Reg::Current;
-    
-    // Protocol helpers
-    static uint8_t calcChecksum(const uint8_t* data, size_t len);
-    bool validateResponse(uint8_t expected_id, uint8_t data_len);
-    
-    // Packet builders
-    size_t buildReadPacket(uint8_t id, uint8_t reg, uint8_t len, uint8_t* out_buf);
-    size_t buildWritePacket(uint8_t id, uint8_t reg, const uint8_t* data, uint8_t len, uint8_t* out_buf);
-    size_t buildSyncWritePacket(const uint8_t* ids, const uint16_t* positions, 
-                                const uint16_t* times_ms, size_t count, uint8_t* out_buf);
-    size_t buildPingPacket(uint8_t id, uint8_t* out_buf);
 };
 
 } // namespace HandControl
