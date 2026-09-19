@@ -11,6 +11,15 @@
 
 namespace HandControl {
 
+inline constexpr uint32_t FAULT_FORCE_UNREACHED = 1U << 0;
+inline constexpr uint32_t FAULT_EXTENSION_LIMIT = 1U << 1;
+inline constexpr uint32_t FAULT_SERVO_POSITION_STALE = 1U << 2;
+inline constexpr uint32_t FAULT_SERVO_CURRENT_STALE = 1U << 3;
+inline constexpr uint32_t FAULT_SERVO_COMMUNICATION = 1U << 4;
+inline constexpr uint32_t FAULT_FSR_ACQUISITION = 1U << 5;
+inline constexpr uint32_t FAULT_FSR_NOT_TARED = 1U << 6;
+inline constexpr uint32_t FAULT_FSR_SATURATED = 1U << 7;
+
 enum class ControllerMode : uint8_t {
     Boot,
     Tare,
@@ -64,7 +73,7 @@ public:
 
     /* Called after one complete ADC scan. It is deterministic and non-blocking. */
     void update(const FSR_Snapshot& fsr);
-    void getStatus(ControllerStatus* status) const;
+    void getStatus(ControllerStatus* status, uint32_t now_ms) const;
     bool outputPending() const { return output_pending_; }
     bool copyOutputFrame(uint8_t* ids, uint16_t* positions, uint16_t* times,
                          size_t count) const;
@@ -73,8 +82,7 @@ public:
         if (sequence_ == sequence) output_pending_ = false;
     }
 
-    void setActualFeedback(Finger finger, uint16_t position, int32_t current_mA,
-                           uint32_t now_ms);
+    void setActualPosition(Finger finger, uint16_t position, uint32_t now_ms);
     void setActualCurrent(Finger finger, int32_t current_mA, uint32_t now_ms);
 
 private:
@@ -93,7 +101,10 @@ private:
     std::array<uint16_t, FINGER_COUNT> command_ticks_{};
     std::array<uint16_t, FINGER_COUNT> actual_ticks_{};
     std::array<int32_t, FINGER_COUNT> current_mA_{};
-    std::array<uint32_t, FINGER_COUNT> feedback_time_ms_{};
+    std::array<uint32_t, FINGER_COUNT> position_feedback_time_ms_{};
+    std::array<uint32_t, FINGER_COUNT> current_feedback_time_ms_{};
+    std::array<bool, FINGER_COUNT> position_feedback_valid_{};
+    std::array<bool, FINGER_COUNT> current_feedback_valid_{};
     std::array<uint32_t, FINGER_COUNT> trajectory_elapsed_ms_{};
     std::array<uint32_t, FINGER_COUNT> trajectory_duration_ms_{};
     std::array<bool, FINGER_COUNT> moving_{};

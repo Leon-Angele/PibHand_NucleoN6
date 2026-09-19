@@ -8,8 +8,7 @@ namespace HandControl {
 namespace {
 constexpr uint16_t MICROSTEP_TIME_MS = 10;
 constexpr uint32_t TICK_MS = 2;
-constexpr uint32_t FAULT_FORCE_UNREACHED = 1U << 0;
-constexpr uint32_t FAULT_EXTENSION_LIMIT = 1U << 1;
+constexpr uint32_t FEEDBACK_STALE_MS = 500;
 }
 
 HandController::HandController(ServoBus& bus)
@@ -249,14 +248,13 @@ bool HandController::copyOutputFrame(uint8_t* ids, uint16_t* positions, uint16_t
     return true;
 }
 
-void HandController::setActualFeedback(Finger finger, uint16_t position, int32_t current_mA,
-                                       uint32_t now_ms)
+void HandController::setActualPosition(Finger finger, uint16_t position, uint32_t now_ms)
 {
     const size_t index = static_cast<size_t>(finger);
     if (index >= FINGER_COUNT) return;
     actual_ticks_[index] = position;
-    current_mA_[index] = current_mA;
-    feedback_time_ms_[index] = now_ms;
+    position_feedback_time_ms_[index] = now_ms;
+    position_feedback_valid_[index] = true;
 }
 
 void HandController::setActualCurrent(Finger finger, int32_t current_mA, uint32_t now_ms)
@@ -264,10 +262,11 @@ void HandController::setActualCurrent(Finger finger, int32_t current_mA, uint32_
     const size_t index = static_cast<size_t>(finger);
     if (index >= FINGER_COUNT) return;
     current_mA_[index] = current_mA;
-    feedback_time_ms_[index] = now_ms;
+    current_feedback_time_ms_[index] = now_ms;
+    current_feedback_valid_[index] = true;
 }
 
-void HandController::getStatus(ControllerStatus* status) const
+void HandController::getStatus(ControllerStatus* status, uint32_t now_ms) const
 {
     if (status == nullptr) return;
     status->mode = mode_;
@@ -276,6 +275,14 @@ void HandController::getStatus(ControllerStatus* status) const
     status->torqueLimitPercent = torque_limit_percent_;
     status->faultFlags = fault_flags_;
     for (size_t i = 0; i < FINGER_COUNT; ++i) {
+        if (!position_feedback_valid_[i] ||
+            (now_ms - position_feedback_time_ms_[i]) > FEEDBACK_STALE_MS) {
+            status->faultFlags |= FAULT_SERVO_POSITION_STALE;
+        }
+        if (!current_feedback_valid_[i] ||
+            (now_ms - current_feedback_time_ms_[i]) > FEEDBACK_STALE_MS) {
+            status->faultFlags |= FAULT_SERVO_CURRENT_STALE;
+        }
         status->referencePercent[i] = reference_percent_[i];
         status->commandPercent[i] = command_percent_[i];
         status->actualPercent[i] = Hand::servoPosToPercent(static_cast<Finger>(i), actual_ticks_[i]);

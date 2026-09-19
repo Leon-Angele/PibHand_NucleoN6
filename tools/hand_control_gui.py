@@ -39,6 +39,17 @@ POSE_NAMES = (
     "Mittelfinger",
 )
 STATUS_MODES = {"BOOT", "TARE", "MOVE", "POS", "ADM", "HOLD", "FAULT"}
+STATUS_FIELD_ORDER = ("R", "C", "P", "PT", "S", "F", "A", "I", "SP", "TQ")
+FAULT_NAMES = {
+    0: "Kraft nicht erreicht",
+    1: "Streckgrenze",
+    2: "Servo-Position veraltet",
+    3: "Servo-Strom veraltet",
+    4: "Servo-Kommunikation",
+    5: "FSR-Erfassung",
+    6: "FSR nicht getared",
+    7: "FSR gesaettigt",
+}
 
 
 def _number(value: float, minimum: float, maximum: float, name: str) -> float:
@@ -102,6 +113,16 @@ def stream_command(rate_hz: int) -> str:
     return f"STATUS:STREAM:{_integer(rate_hz, 0, 20, 'Statusrate')}"
 
 
+def format_faults(faults: int) -> str:
+    if faults == 0:
+        return "0x00000000 (keine)"
+    names = [name for bit, name in FAULT_NAMES.items() if faults & (1 << bit)]
+    known_mask = sum(1 << bit for bit in FAULT_NAMES)
+    if faults & ~known_mask:
+        names.append("unbekannt")
+    return f"0x{faults:08X} ({', '.join(names)})"
+
+
 @dataclass(frozen=True)
 class HandStatus:
     sequence: int
@@ -150,12 +171,12 @@ def parse_status(line: str) -> HandStatus:
         raise ValueError(f"Unbekannter Controller-Modus: {mode}")
     if (len(parts) - 4) % 2:
         raise ValueError("STAT-Felder sind nicht vollstaendig.")
-    fields = dict(zip(parts[4::2], parts[5::2]))
-    required = {"R", "C", "P", "PT", "S", "F", "A", "I", "SP", "TQ"}
-    if set(fields) != required:
-        missing = ", ".join(sorted(required - set(fields))) or "keine"
-        extra = ", ".join(sorted(set(fields) - required)) or "keine"
-        raise ValueError(f"Ungueltige STAT-Felder (fehlen: {missing}; extra: {extra}).")
+    labels = tuple(parts[4::2])
+    if labels != STATUS_FIELD_ORDER:
+        raise ValueError(
+            "Ungueltige STAT-Feldfolge: " + ",".join(labels)
+        )
+    fields = dict(zip(labels, parts[5::2]))
     try:
         speed = int(fields["SP"], 10)
         torque = int(fields["TQ"], 10)
@@ -252,7 +273,9 @@ class SerialWorker:
                         try:
                             self.events.put(("status", parse_status(line)))
                         except ValueError as exc:
-                            self.events.put(("log", f"Ungueltiger Status: {exc}"))
+                            self.events.put(
+                                ("log", f"Ungueltiger Status: {exc}; Rohdaten: {line}")
+                            )
                     elif line == "OK" or line.startswith("ERR:"):
                         if pending is None:
                             self.events.put(("log", f"Unzugeordnete Antwort: {line}"))
@@ -551,6 +574,7 @@ class HandControlApp:
             )
             value_label.pack()
             if label == "Faults":
+                value_label.configure(wraplength=320)
                 self.fault_label = value_label
 
         columns = (
@@ -725,7 +749,7 @@ class HandControlApp:
     def _update_status(self, status: HandStatus) -> None:
         self.sequence_var.set(str(status.sequence))
         self.mode_var.set(status.mode)
-        self.fault_var.set(f"0x{status.faults:08X}")
+        self.fault_var.set(format_faults(status.faults))
         self.status_speed_var.set(f"{status.speed} deg/s")
         self.status_torque_var.set(f"{status.torque} %")
         self.fault_label.configure(fg="#b00020" if status.faults else "#146c2e")

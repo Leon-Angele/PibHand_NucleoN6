@@ -36,9 +36,14 @@ ServoBus / USART3 / STS3215
 | VCP zu Gegenstelle | LPUART1 | 460800 Baud, 8N1 |
 | Servo-Bus | USART3 | 1000000 Baud |
 | FSR-Sensoren | ADC1 + GPDMA | 5 Kanaele, 12 Bit |
-| Abtasttrigger | TIM6 TRGO | 500 Hz, 2 ms |
+| FSR-Abtasttakt | TIM6 + Software-DMA-Neustart | 500 Hz, 2 ms |
 | Positionstrajektorie | HandController | Smoothstep |
 | Servo-Feedback | USART3 Readback | Position und Strom, round-robin |
+
+Der Servo-Readback laeuft waehrend eines aktiven Statusstreams. Eine einzelne
+`STATUS?`-Abfrage startet einen vollstaendigen Readback-Durchlauf und antwortet
+erst danach. TIM6 taktet die FSR-Verarbeitung; ADC1 wird fuer jede Scanfolge aus
+dem Mainloop per Software neu gestartet.
 
 Die ADC-Reihenfolge ist:
 
@@ -187,6 +192,10 @@ Mit `STATUS?` oder `STATUS:STREAM:<Hz>` koennen folgende Daten abgefragt werden:
 - Servo-Iststroeme
 - globale Geschwindigkeit
 - globales Torque-Limit
+
+Die Fehleranzeige markiert ausserdem veraltete Servo-Positionen/-Stroeme,
+Servo-Kommunikationsfehler sowie fehlende, ungetarete oder gesaettigte
+FSR-Messungen. Der Stream laeuft bei einem einzelnen ausgefallenen Servo weiter.
 
 ## Wichtige Dateien
 

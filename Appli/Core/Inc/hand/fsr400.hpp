@@ -13,16 +13,19 @@ extern "C" {
 
 typedef struct {
     uint32_t sequence;
+    uint32_t last_update_ms;
     uint16_t raw[FSR400_SENSOR_COUNT];
     float filtered[FSR400_SENSOR_COUNT];
     float voltage[FSR400_SENSOR_COUNT];
     float force_newton[FSR400_SENSOR_COUNT];
     bool tared;
     bool saturated;
+    bool acquisition_ok;
 } FSR_Snapshot;
 
 bool FSR_Start(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim);
 bool FSR_RestartDMA(ADC_HandleTypeDef *hadc);
+void FSR_ReportAcquisitionError(void);
 void FSR_Update(void);
 bool FSR_Tare(void);
 bool FSR_IsTared(void);

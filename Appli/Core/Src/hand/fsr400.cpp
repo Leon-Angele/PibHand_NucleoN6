@@ -22,9 +22,11 @@ static volatile float fsr_force[FSR400_SENSOR_COUNT] = {};
 static float fsr_tare_conductance_us[FSR400_SENSOR_COUNT] = {};
 static volatile float fsr_filter_alpha = FSR_DEFAULT_FILTER_ALPHA;
 static volatile uint32_t fsr_sequence = 0U;
+static volatile uint32_t fsr_last_update_ms = 0U;
 static volatile bool fsr_filter_initialized = false;
 static volatile bool fsr_tared = false;
 static volatile bool fsr_saturated = false;
+static volatile bool fsr_acquisition_ok = false;
 static uint16_t startup_tare_samples = 0U;
 static float startup_tare_sum[FSR400_SENSOR_COUNT] = {};
 
@@ -79,7 +81,9 @@ bool FSR_Start(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim)
     fsr_filter_initialized = false;
     fsr_tared = false;
     fsr_saturated = false;
+    fsr_acquisition_ok = false;
     fsr_sequence = 0U;
+    fsr_last_update_ms = 0U;
     startup_tare_samples = 0U;
     for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
         fsr_raw[i] = 0U;
@@ -107,13 +111,22 @@ bool FSR_RestartDMA(ADC_HandleTypeDef *hadc)
     if (hadc == nullptr) return false;
 
     fsr_dma_last_stop_status = HAL_ADC_Stop_DMA(hadc);
-    if (fsr_dma_last_stop_status != HAL_OK) return false;
+    if (fsr_dma_last_stop_status != HAL_OK) {
+        fsr_acquisition_ok = false;
+        return false;
+    }
 
     fsr_dma_last_start_status = HAL_ADC_Start_DMA(
         hadc,
         reinterpret_cast<uint32_t*>(const_cast<uint32_t*>(fsr_raw)),
         FSR400_SENSOR_COUNT);
+    if (fsr_dma_last_start_status != HAL_OK) fsr_acquisition_ok = false;
     return fsr_dma_last_start_status == HAL_OK;
+}
+
+void FSR_ReportAcquisitionError(void)
+{
+    fsr_acquisition_ok = false;
 }
 
 void FSR_Update(void)
@@ -140,7 +153,7 @@ void FSR_Update(void)
         }
         const float effective = std::max(conductance - fsr_tare_conductance_us[i], 0.0f);
         fsr_force[i] = effective_conductance_to_force(effective);
-        saturated = saturated || (fsr_filtered[i] >= 4080.0f);
+        saturated = saturated || (fsr_raw[i] >= 4080U);
     }
     if (!fsr_tared && startup_tare_samples < 250U) {
         ++startup_tare_samples;
@@ -152,6 +165,8 @@ void FSR_Update(void)
         }
     }
     fsr_saturated = saturated;
+    fsr_last_update_ms = HAL_GetTick();
+    fsr_acquisition_ok = true;
     ++fsr_sequence;
 }
 
@@ -177,8 +192,10 @@ void FSR_GetSnapshot(FSR_Snapshot *snapshot)
     uint32_t last_sequence;
     do {
         first_sequence = fsr_sequence;
+        snapshot->last_update_ms = fsr_last_update_ms;
         snapshot->tared = fsr_tared;
         snapshot->saturated = fsr_saturated;
+        snapshot->acquisition_ok = fsr_acquisition_ok;
         for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
             snapshot->raw[i] = fsr_raw[i];
             snapshot->filtered[i] = fsr_filtered[i];

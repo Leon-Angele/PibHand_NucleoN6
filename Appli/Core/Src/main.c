@@ -817,6 +817,15 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   }
 }
 
+void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
+{
+  if ((hadc != NULL) && (hadc->Instance == ADC1))
+  {
+    FSR_ReportAcquisitionError();
+    fsr_dma_restart_pending = 1U;
+  }
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if ((htim != NULL) && (htim->Instance == TIM6))

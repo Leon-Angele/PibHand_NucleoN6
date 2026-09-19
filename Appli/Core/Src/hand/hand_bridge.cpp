@@ -23,10 +23,16 @@ static ServoBus servoBus(servoPacketHandler);
 static SerialCommander commander(vcpPort);
 static HandController hand(servoBus);
 
-enum class ServoWriteKind : uint8_t { None, Position, Torque };
+enum class ServoTransaction : uint8_t {
+    None,
+    PositionWrite,
+    TorqueWrite,
+    PositionRead,
+    CurrentRead
+};
 
 static bool servo_port_ready = false;
-static ServoWriteKind servo_write_in_flight = ServoWriteKind::None;
+static ServoTransaction servo_transaction = ServoTransaction::None;
 static uint32_t position_sequence_in_flight = 0;
 static uint8_t torque_index_in_flight = 0;
 static uint32_t torque_generation = 0;
@@ -35,6 +41,23 @@ static bool torque_update_pending = false;
 static uint8_t torque_update_index = 0;
 static uint8_t status_stream_hz = 0;
 static uint32_t status_last_ms = 0;
+static bool status_once_pending = false;
+static uint32_t status_once_deadline_ms = 0;
+static uint32_t status_once_target_sweep = 0;
+static uint8_t feedback_step = 0;
+static uint8_t feedback_axis_in_flight = 0;
+static uint8_t feedback_position_success_mask = 0;
+static uint8_t feedback_current_success_mask = 0;
+static uint8_t last_position_success_mask = 0;
+static uint8_t last_current_success_mask = 0;
+static uint32_t feedback_sweep_generation = 0;
+static uint32_t feedback_next_read_ms = 0;
+static bool feedback_preferred = true;
+static constexpr uint8_t ALL_SERVO_MASK = (1U << FINGER_COUNT) - 1U;
+static constexpr uint8_t FEEDBACK_STEPS_PER_SWEEP = static_cast<uint8_t>(FINGER_COUNT * 2U);
+static constexpr uint32_t FEEDBACK_READ_INTERVAL_MS = 2U;
+static constexpr uint32_t STATUS_ONCE_TIMEOUT_MS = 350U;
+static constexpr uint32_t FSR_STALE_MS = 100U;
 static constexpr uint32_t LED_PULSE_MS = 100U;
 static uint32_t blue_led_until_ms = 0;
 static uint32_t red_led_until_ms = 0;
@@ -88,8 +111,19 @@ void appendStatus(void)
 {
     ControllerStatus status;
     FSR_Snapshot fsr{};
-    hand.getStatus(&status);
+    const uint32_t now = HAL_GetTick();
+    hand.getStatus(&status, now);
     FSR_GetSnapshot(&fsr);
+    if (last_position_success_mask != ALL_SERVO_MASK ||
+        last_current_success_mask != ALL_SERVO_MASK) {
+        status.faultFlags |= FAULT_SERVO_COMMUNICATION;
+    }
+    if (!fsr.acquisition_ok || fsr.sequence == 0U ||
+        (now - fsr.last_update_ms) > FSR_STALE_MS) {
+        status.faultFlags |= FAULT_FSR_ACQUISITION;
+    }
+    if (!fsr.tared) status.faultFlags |= FAULT_FSR_NOT_TARED;
+    if (fsr.saturated) status.faultFlags |= FAULT_FSR_SATURATED;
 
     char message[384]{};
     int used = std::snprintf(message, sizeof(message), "STAT:%lu:%s:%08lX:R:",
@@ -132,69 +166,152 @@ void appendStatus(void)
     }
 }
 
+bool feedbackRequested() noexcept
+{
+    return status_stream_hz != 0U || status_once_pending;
+}
+
+void resetFeedbackSweep(uint32_t now_ms) noexcept
+{
+    feedback_step = 0U;
+    feedback_position_success_mask = 0U;
+    feedback_current_success_mask = 0U;
+    feedback_next_read_ms = now_ms;
+    feedback_preferred = true;
+}
+
+void completeStatusOnce() noexcept
+{
+    appendStatus();
+    commander.completeDeferred(true);
+    status_once_pending = false;
+}
+
+void completeFeedbackStep(bool success, uint32_t now_ms) noexcept
+{
+    const uint8_t mask = static_cast<uint8_t>(1U << feedback_axis_in_flight);
+    if (servo_transaction == ServoTransaction::PositionRead) {
+        if (success) feedback_position_success_mask |= mask;
+    } else if (servo_transaction == ServoTransaction::CurrentRead) {
+        if (success) feedback_current_success_mask |= mask;
+    }
+
+    ++feedback_step;
+    feedback_next_read_ms = now_ms + FEEDBACK_READ_INTERVAL_MS;
+    feedback_preferred = false;
+    if (feedback_step < FEEDBACK_STEPS_PER_SWEEP) return;
+
+    last_position_success_mask = feedback_position_success_mask;
+    last_current_success_mask = feedback_current_success_mask;
+    ++feedback_sweep_generation;
+    feedback_step = 0U;
+    feedback_position_success_mask = 0U;
+    feedback_current_success_mask = 0U;
+    if (status_once_pending && feedback_sweep_generation >= status_once_target_sweep) {
+        completeStatusOnce();
+    }
+}
+
+bool startFeedbackRead(uint32_t now_ms) noexcept
+{
+    feedback_axis_in_flight = static_cast<uint8_t>(feedback_step / 2U);
+    const Finger finger = static_cast<Finger>(feedback_axis_in_flight);
+    const uint8_t id = Hand::getServoID(finger);
+    const bool position = (feedback_step % 2U) == 0U;
+    const bool started = servo_port_ready &&
+        (position ? servoBus.startReadPosition(id) : servoBus.startReadCurrent(id));
+    servo_transaction = position ? ServoTransaction::PositionRead
+                                 : ServoTransaction::CurrentRead;
+    if (started) return true;
+
+    signalSerialError();
+    servoBus.resetState();
+    completeFeedbackStep(false, now_ms);
+    servo_transaction = ServoTransaction::None;
+    return false;
+}
+
 class DefaultGripExecutor final : public ICommandExecutor {
 public:
-    bool executeCommand(const Command& command) override
+    Result executeCommand(const Command& command) override
     {
+        const auto result = [](bool success) {
+            return success ? Result::Success : Result::Failure;
+        };
         switch (command.type) {
             case CommandType::Pose:
                 if (command.has_force) {
                     const bool accepted = setPoseWithForce(command);
                     if (accepted) signalPoseAccepted();
-                    return accepted;
+                    return result(accepted);
                 }
                 hand.setTargetGrip(command.grip);
                 signalPoseAccepted();
-                return true;
+                return Result::Success;
             case CommandType::SinglePosition:
                 if (command.has_force) {
                     const bool accepted = hand.setSingleFingerPercentWithForce(
                         command.finger, command.position_percent, command.force_newton);
                     if (accepted) signalPoseAccepted();
-                    return accepted;
+                    return result(accepted);
                 }
                 {
                     const bool accepted = hand.setSingleFingerPercent(
                         command.finger, command.position_percent);
                     if (accepted) signalPoseAccepted();
-                    return accepted;
+                    return result(accepted);
                 }
             case CommandType::ForceAll:
-                return hand.setForceAll(command.force_newton);
+                return result(hand.setForceAll(command.force_newton));
             case CommandType::ForceFinger:
-                return hand.setForce(command.finger, command.force_newton);
+                return result(hand.setForce(command.finger, command.force_newton));
             case CommandType::AdmittanceOn:
-                if (!FSR_IsTared()) return false;
+                if (!FSR_IsTared()) return Result::Failure;
                 hand.setAdmittanceEnabled(true);
-                return true;
+                return Result::Success;
             case CommandType::AdmittanceOff:
                 hand.setAdmittanceEnabled(false);
-                return true;
+                return Result::Success;
             case CommandType::FsrTare:
-                if (hand.admittanceEnabled() || hand.isMoving()) return false;
-                return FSR_Tare();
+                if (hand.admittanceEnabled() || hand.isMoving()) return Result::Failure;
+                return result(FSR_Tare());
             case CommandType::Speed:
                 hand.setSpeed(command.speed_deg_per_s);
-                return true;
+                return Result::Success;
             case CommandType::Torque:
                 hand.setTorqueLimit(command.torque_percent);
                 ++torque_generation;
                 torque_update_pending = true;
                 torque_update_index = 0;
-                return true;
+                return Result::Success;
             case CommandType::Stop:
             case CommandType::Hold:
                 hand.stopImmediate();
-                return true;
+                return Result::Success;
             case CommandType::GetStatus:
-                appendStatus();
-                return true;
+                if (status_once_pending) return Result::Failure;
+                status_once_pending = true;
+                status_once_deadline_ms = HAL_GetTick() + STATUS_ONCE_TIMEOUT_MS;
+                if (status_stream_hz == 0U) {
+                    resetFeedbackSweep(HAL_GetTick());
+                    status_once_target_sweep = feedback_sweep_generation + 1U;
+                } else {
+                    const bool sweep_not_started = feedback_step == 0U &&
+                        servo_transaction != ServoTransaction::PositionRead &&
+                        servo_transaction != ServoTransaction::CurrentRead;
+                    status_once_target_sweep = feedback_sweep_generation +
+                        (sweep_not_started ? 1U : 2U);
+                }
+                return Result::Deferred;
             case CommandType::StatusStream:
+                if (status_stream_hz == 0U && command.status_rate_hz != 0U) {
+                    resetFeedbackSweep(HAL_GetTick());
+                }
                 status_stream_hz = command.status_rate_hz;
                 status_last_ms = HAL_GetTick();
-                return true;
+                return Result::Success;
             default:
-                return false;
+                return Result::Failure;
         }
     }
 
@@ -244,23 +361,83 @@ void hand_bridge_service(void)
     servoBus.poll();
     const uint32_t now = HAL_GetTick();
     updateLedPulses(now);
-    if (servoBus.getState() == BusState::TIMEOUT) {
+
+    const BusState bus_state = servoBus.getState();
+    if (bus_state == BusState::DATA_READY) {
+        bool success = false;
+        if (servo_transaction == ServoTransaction::PositionRead) {
+            const auto position = servoBus.getPositionResult();
+            success = position.has_value();
+            if (success) {
+                hand.setActualPosition(static_cast<Finger>(feedback_axis_in_flight),
+                                       *position, now);
+            }
+            completeFeedbackStep(success, now);
+        } else if (servo_transaction == ServoTransaction::CurrentRead) {
+            const auto current = servoBus.getReadResult();
+            success = current.has_value();
+            if (success) {
+                hand.setActualCurrent(static_cast<Finger>(feedback_axis_in_flight),
+                                      *current, now);
+            }
+            completeFeedbackStep(success, now);
+        } else {
+            servoBus.resetState();
+        }
+        if (!success) signalSerialError();
+        servo_transaction = ServoTransaction::None;
+    } else if (bus_state == BusState::TIMEOUT) {
         signalSerialError();
-        servo_write_in_flight = ServoWriteKind::None;
-    } else if (servoBus.getState() == BusState::IDLE) {
-        if (servo_write_in_flight == ServoWriteKind::Position) {
+        if (servo_transaction == ServoTransaction::PositionRead ||
+            servo_transaction == ServoTransaction::CurrentRead) {
+            completeFeedbackStep(false, now);
+        }
+        servoBus.resetState();
+        servo_transaction = ServoTransaction::None;
+    } else if (bus_state == BusState::IDLE) {
+        if (servo_transaction == ServoTransaction::PositionWrite) {
             hand.markOutputSent(position_sequence_in_flight);
-            servo_write_in_flight = ServoWriteKind::None;
-        } else if (servo_write_in_flight == ServoWriteKind::Torque) {
+            feedback_preferred = true;
+            servo_transaction = ServoTransaction::None;
+        } else if (servo_transaction == ServoTransaction::TorqueWrite) {
             if (torque_generation == torque_generation_in_flight &&
                 torque_update_index == torque_index_in_flight) {
                 ++torque_update_index;
             }
-            servo_write_in_flight = ServoWriteKind::None;
+            servo_transaction = ServoTransaction::None;
         }
     }
 
-    if (servo_write_in_flight == ServoWriteKind::None && !torque_update_pending &&
+    if (status_once_pending &&
+        static_cast<int32_t>(now - status_once_deadline_ms) >= 0) {
+        last_position_success_mask = feedback_position_success_mask;
+        last_current_success_mask = feedback_current_success_mask;
+        completeStatusOnce();
+    }
+
+    if (servo_transaction == ServoTransaction::None && torque_update_pending &&
+        servoBus.getState() == BusState::IDLE) {
+        if (torque_update_index >= FINGER_COUNT) {
+            torque_update_pending = false;
+        } else if (servoBus.writeTorqueLimit(
+                       Hand::getServoID(static_cast<Finger>(torque_update_index)), hand.torqueLimit())) {
+            torque_index_in_flight = torque_update_index;
+            torque_generation_in_flight = torque_generation;
+            servo_transaction = ServoTransaction::TorqueWrite;
+        } else {
+            signalSerialError();
+        }
+    }
+
+    const bool feedback_due = feedbackRequested() &&
+        static_cast<int32_t>(now - feedback_next_read_ms) >= 0;
+    if (servo_transaction == ServoTransaction::None && !torque_update_pending &&
+        servoBus.getState() == BusState::IDLE && feedback_due &&
+        (feedback_preferred || !hand.outputPending())) {
+        (void)startFeedbackRead(now);
+    }
+
+    if (servo_transaction == ServoTransaction::None && !torque_update_pending &&
         servoBus.getState() == BusState::IDLE && hand.outputPending()) {
         std::array<uint8_t, FINGER_COUNT> ids{};
         std::array<uint16_t, FINGER_COUNT> positions{};
@@ -269,24 +446,16 @@ void hand_bridge_service(void)
         if (hand.copyOutputFrame(ids.data(), positions.data(), times.data(), FINGER_COUNT) &&
             servoBus.syncWritePositions(ids.data(), positions.data(), times.data(), FINGER_COUNT)) {
             position_sequence_in_flight = output_sequence;
-            servo_write_in_flight = ServoWriteKind::Position;
+            servo_transaction = ServoTransaction::PositionWrite;
         } else {
             signalSerialError();
         }
     }
 
-    if (servo_write_in_flight == ServoWriteKind::None && torque_update_pending &&
-        servoBus.getState() == BusState::IDLE) {
-        if (torque_update_index >= FINGER_COUNT) {
-            torque_update_pending = false;
-        } else if (servoBus.writeTorqueLimit(
-                       Hand::getServoID(static_cast<Finger>(torque_update_index)), hand.torqueLimit())) {
-            torque_index_in_flight = torque_update_index;
-            torque_generation_in_flight = torque_generation;
-            servo_write_in_flight = ServoWriteKind::Torque;
-        } else {
-            signalSerialError();
-        }
+    if (servo_transaction == ServoTransaction::None && !torque_update_pending &&
+        servoBus.getState() == BusState::IDLE && feedbackRequested() &&
+        static_cast<int32_t>(now - feedback_next_read_ms) >= 0) {
+        (void)startFeedbackRead(now);
     }
 
     commander.processCommand();
@@ -296,8 +465,9 @@ void hand_bridge_service(void)
     if (rate != 0U) {
         const uint32_t interval = 1000U / rate;
         const uint32_t now = HAL_GetTick();
-        if ((now - status_last_ms) >= interval) {
-            status_last_ms = now;
+        const uint32_t elapsed = now - status_last_ms;
+        if (elapsed >= interval) {
+            status_last_ms += (elapsed / interval) * interval;
             appendStatus();
         }
     }

@@ -30,6 +30,12 @@ class ICommandExecutor {
 public:
     virtual ~ICommandExecutor() = default;
 
+    enum class Result : uint8_t {
+        Success,
+        Failure,
+        Deferred
+    };
+
     enum class CommandType : uint8_t {
         Pose,
         SinglePosition,
@@ -59,7 +65,7 @@ public:
         bool has_force = false;
     };
 
-    virtual bool executeCommand(const Command& cmd) = 0;
+    virtual Result executeCommand(const Command& cmd) = 0;
 };
 
 class SerialCommander {
@@ -74,6 +80,7 @@ public:
     void processCommand() noexcept;
     void serviceTx() noexcept;
     void sendText(const char* text) noexcept;
+    void completeDeferred(bool success) noexcept;
 
 private:
     HandControl::ISerialPort& port_;
@@ -95,6 +102,7 @@ private:
     uint8_t tx_head_ = 0;
     uint8_t tx_tail_ = 0;
     bool tx_active_ = false;
+    bool command_deferred_ = false;
     alignas(32) std::array<uint8_t, TX_MESSAGE_SIZE> tx_dma_buffer_{};
 
     void sendResponse(const char* msg, size_t len) noexcept;

@@ -119,9 +119,20 @@ void SerialCommander::serviceTx() noexcept
     }
 }
 
+void SerialCommander::completeDeferred(bool success) noexcept
+{
+    if (!command_deferred_) return;
+    const char* response = success ? "OK\n" : "ERR:EXEC\n";
+    if (!success && error_callback_ != nullptr) error_callback_();
+    sendResponse(response, std::strlen(response));
+    command_deferred_ = false;
+}
+
 void SerialCommander::processCommand() noexcept
 {
     serviceTx();
+
+    if (command_deferred_) return;
 
     if (overflow_flag_) {
         const char response[] = "ERR:QUEUE_FULL\n";
@@ -168,9 +179,18 @@ void SerialCommander::processCommand() noexcept
 
         ICommandExecutor::Command parsed;
         if (parseCommand(reinterpret_cast<const uint8_t*>(command), length - 1U, parsed) && executor_) {
-            const char* response = executor_->executeCommand(parsed) ? "OK\n" : "ERR:EXEC\n";
-            if (response[0] == 'E' && error_callback_ != nullptr) error_callback_();
-            sendResponse(response, std::strlen(response));
+            const ICommandExecutor::Result result = executor_->executeCommand(parsed);
+            if (result == ICommandExecutor::Result::Deferred) {
+                command_deferred_ = true;
+                break;
+            } else {
+                const char* response = result == ICommandExecutor::Result::Success
+                                     ? "OK\n" : "ERR:EXEC\n";
+                if (result == ICommandExecutor::Result::Failure && error_callback_ != nullptr) {
+                    error_callback_();
+                }
+                sendResponse(response, std::strlen(response));
+            }
         } else if (!executor_) {
             const char response[] = "ERR:NOEXEC\n";
             if (error_callback_ != nullptr) error_callback_();
