@@ -22,7 +22,7 @@ typedef struct {
 } FSR_Snapshot;
 
 bool FSR_Start(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim);
-bool FSR_RestartDMA(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim);
+bool FSR_RestartDMA(ADC_HandleTypeDef *hadc);
 void FSR_Update(void);
 bool FSR_Tare(void);
 bool FSR_IsTared(void);

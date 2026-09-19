@@ -102,28 +102,18 @@ bool FSR_Start(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim)
     return true;
 }
 
-bool FSR_RestartDMA(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim)
+bool FSR_RestartDMA(ADC_HandleTypeDef *hadc)
 {
-    if (hadc == nullptr || htim == nullptr) return false;
-
-    if (HAL_TIM_Base_Stop_IT(htim) != HAL_OK) return false;
+    if (hadc == nullptr) return false;
 
     fsr_dma_last_stop_status = HAL_ADC_Stop_DMA(hadc);
-    if (fsr_dma_last_stop_status != HAL_OK) {
-        (void)HAL_TIM_Base_Start_IT(htim);
-        return false;
-    }
+    if (fsr_dma_last_stop_status != HAL_OK) return false;
 
     fsr_dma_last_start_status = HAL_ADC_Start_DMA(
         hadc,
         reinterpret_cast<uint32_t*>(const_cast<uint32_t*>(fsr_raw)),
         FSR400_SENSOR_COUNT);
-    if (fsr_dma_last_start_status != HAL_OK) {
-        (void)HAL_TIM_Base_Start_IT(htim);
-        return false;
-    }
-
-    return HAL_TIM_Base_Start_IT(htim) == HAL_OK;
+    return fsr_dma_last_start_status == HAL_OK;
 }
 
 void FSR_Update(void)

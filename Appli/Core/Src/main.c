@@ -257,11 +257,10 @@ int main(void)
     {
       control_tick_pending = 0U;
       hand_bridge_update();
-    }
-
-    if (fsr_dma_restart_pending != 0U && FSR_RestartDMA(&hadc1, &htim6))
-    {
-      fsr_dma_restart_pending = 0U;
+      if (fsr_dma_restart_pending != 0U && FSR_RestartDMA(&hadc1))
+      {
+        fsr_dma_restart_pending = 0U;
+      }
     }
     
     // Process commands, bus work and queued VCP responses from main context.
@@ -322,8 +321,8 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.NbrOfConversion = 5;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T6_TRGO;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_ONESHOT;
   hadc1.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
   hadc1.Init.LeftBitShift = ADC_LEFTBITSHIFT_NONE;
