@@ -51,6 +51,9 @@ ADC_HandleTypeDef hadc1;
 DMA_NodeTypeDef Node_GPDMA1_Channel6 __NON_CACHEABLE;
 DMA_QListTypeDef List_GPDMA1_Channel6;
 DMA_HandleTypeDef handle_GPDMA1_Channel6;
+static volatile uint8_t fsr_dma_restart_pending = 0U;
+static volatile uint8_t fsr_sample_pending = 0U;
+static volatile uint8_t control_tick_pending = 0U;
 
 CACHEAXI_HandleTypeDef hcacheaxi;
 
@@ -243,6 +246,23 @@ int main(void)
         vcp_rx_restart_pending = 1U;
       }
     }
+
+    if (fsr_sample_pending != 0U)
+    {
+      fsr_sample_pending = 0U;
+      FSR_Update();
+    }
+
+    if (control_tick_pending != 0U)
+    {
+      control_tick_pending = 0U;
+      hand_bridge_update();
+    }
+
+    if (fsr_dma_restart_pending != 0U && FSR_RestartDMA(&hadc1, &htim6))
+    {
+      fsr_dma_restart_pending = 0U;
+    }
     
     // Process commands, bus work and queued VCP responses from main context.
     hand_bridge_service();
@@ -297,14 +317,14 @@ static void MX_ADC1_Init(void)
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.GainCompensation = 0;
   hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.NbrOfConversion = 5;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T6_TRGO;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
-  hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_CIRCULAR;
+  hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_ONESHOT;
   hadc1.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
   hadc1.Init.LeftBitShift = ADC_LEFTBITSHIFT_NONE;
   hadc1.Init.OversamplingMode = DISABLE;
@@ -793,9 +813,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
   if ((hadc != NULL) && (hadc->Instance == ADC1))
   {
-    // This callback follows the ADC/GPDMA transfer started by TIM6 TRGO.
-    FSR_Update();
-    hand_bridge_update();
+    fsr_sample_pending = 1U;
+    fsr_dma_restart_pending = 1U;
   }
 }
 
@@ -803,7 +822,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if ((htim != NULL) && (htim->Instance == TIM6))
   {
-    // TIM6 is the ADC trigger. The control update runs after the complete ADC scan.
+    control_tick_pending = 1U;
   }
 }
 

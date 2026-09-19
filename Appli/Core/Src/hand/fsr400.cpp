@@ -13,7 +13,9 @@ constexpr float FSR_DEFAULT_FILTER_ALPHA = 0.2f;
 constexpr float FSR_MAX_N = 20.0f;
 
 __attribute__((section(".noncacheable"), aligned(32)))
-static volatile uint16_t fsr_raw[FSR400_SENSOR_COUNT] = {};
+static volatile uint32_t fsr_raw[FSR400_SENSOR_COUNT] = {};
+volatile HAL_StatusTypeDef fsr_dma_last_stop_status = HAL_OK;
+volatile HAL_StatusTypeDef fsr_dma_last_start_status = HAL_OK;
 
 static volatile float fsr_filtered[FSR400_SENSOR_COUNT] = {};
 static volatile float fsr_force[FSR400_SENSOR_COUNT] = {};
@@ -87,22 +89,46 @@ bool FSR_Start(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim)
         startup_tare_sum[i] = 0.0f;
     }
 
-    if (HAL_ADC_Start_DMA(hadc, reinterpret_cast<uint32_t*>(const_cast<uint16_t*>(fsr_raw)),
+    if (HAL_ADC_Start_DMA(hadc, reinterpret_cast<uint32_t*>(const_cast<uint32_t*>(fsr_raw)),
                           FSR400_SENSOR_COUNT) != HAL_OK) {
         return false;
     }
 
-    /* TIM6 remains the ADC trigger; its IRQ is not required for control. */
-    if (HAL_TIM_Base_Start(htim) != HAL_OK) {
+    /* TIM6 triggers ADC1 and independently schedules the control loop. */
+    if (HAL_TIM_Base_Start_IT(htim) != HAL_OK) {
         (void)HAL_ADC_Stop_DMA(hadc);
         return false;
     }
     return true;
 }
 
+bool FSR_RestartDMA(ADC_HandleTypeDef *hadc, TIM_HandleTypeDef *htim)
+{
+    if (hadc == nullptr || htim == nullptr) return false;
+
+    if (HAL_TIM_Base_Stop_IT(htim) != HAL_OK) return false;
+
+    fsr_dma_last_stop_status = HAL_ADC_Stop_DMA(hadc);
+    if (fsr_dma_last_stop_status != HAL_OK) {
+        (void)HAL_TIM_Base_Start_IT(htim);
+        return false;
+    }
+
+    fsr_dma_last_start_status = HAL_ADC_Start_DMA(
+        hadc,
+        reinterpret_cast<uint32_t*>(const_cast<uint32_t*>(fsr_raw)),
+        FSR400_SENSOR_COUNT);
+    if (fsr_dma_last_start_status != HAL_OK) {
+        (void)HAL_TIM_Base_Start_IT(htim);
+        return false;
+    }
+
+    return HAL_TIM_Base_Start_IT(htim) == HAL_OK;
+}
+
 void FSR_Update(void)
 {
-    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(const_cast<uint16_t*>(fsr_raw)), 32U);
+    SCB_InvalidateDCache_by_Addr(reinterpret_cast<uint32_t*>(const_cast<uint32_t*>(fsr_raw)), 32U);
     const float alpha = clamp_alpha(fsr_filter_alpha);
     if (!fsr_filter_initialized) {
         for (uint8_t i = 0; i < FSR400_SENSOR_COUNT; ++i) {
