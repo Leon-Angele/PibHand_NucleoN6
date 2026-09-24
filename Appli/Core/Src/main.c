@@ -190,7 +190,7 @@ int main(void)
     Error_Handler();
   }
 
-  // ADC DMA is started before TIM6; the TIM6 update event is the fixed 500 Hz tick.
+  // ADC DMA is started before TIMHAL_ADC_ConvCpltCallback6; the TIM6 update event is the fixed 500 Hz tick.
   if (!FSR_Start(&hadc1, &htim6))
   {
     Error_Handler();

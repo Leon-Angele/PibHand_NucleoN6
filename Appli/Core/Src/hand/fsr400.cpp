@@ -110,12 +110,6 @@ bool FSR_RestartDMA(ADC_HandleTypeDef *hadc)
 {
     if (hadc == nullptr) return false;
 
-    fsr_dma_last_stop_status = HAL_ADC_Stop_DMA(hadc);
-    if (fsr_dma_last_stop_status != HAL_OK) {
-        fsr_acquisition_ok = false;
-        return false;
-    }
-
     fsr_dma_last_start_status = HAL_ADC_Start_DMA(
         hadc,
         reinterpret_cast<uint32_t*>(const_cast<uint32_t*>(fsr_raw)),
