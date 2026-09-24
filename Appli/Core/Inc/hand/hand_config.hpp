@@ -84,11 +84,11 @@ inline constexpr float DEFAULT_ADMITTANCE_NATURAL_FREQUENCY_HZ = 3.0f;
 inline constexpr float CONTROL_DT_S = 0.002f;
 
 inline constexpr std::array<FingerConfig, FINGER_COUNT> AxisSettings = {{
-    {"Thumb",          1, 2047, 4095},
-    {"Index",          2, 2047, 4095},
-    {"Middle",         3, 2047, 4095},
-    {"Ring",           4, 2047, 4095},
-    {"Pinky",          5, 2047, 4095},
+    {"Thumb",          1, 4095, 0},
+    {"Index",          2, 4095, 0},
+    {"Middle",         3, 4095, 400},
+    {"Ring",           4, 4095, 0},
+    {"Pinky",          5, 4095, 400},
     {"ThumbRotation",  6, 2047, 4095}
 }};
 
