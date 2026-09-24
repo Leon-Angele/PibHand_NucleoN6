@@ -20,11 +20,17 @@ Write-Host "--- Signiere Appli (AXISRAM1) ---" -ForegroundColor Cyan
 
 # --- 2. FLASHEN ---
 Write-Host "--- Starte Flash-Vorgang ---" -ForegroundColor Yellow
-$FlashArgs = @("-c", "port=SWD", "mode=UR", "reset=HwReset", "-el", $ExtLoader)
+$FlashArgs = @("-c", "port=SWD", "mode=UR", "reset=HWrst", "-el", $ExtLoader)
 $FlashArgs += @("-w", "$($ProjectName)_FSBL-trusted.bin", "0x70000000", "-v")
 $FlashArgs += @("-w", "$($ProjectName)_Appli-trusted.bin", "0x70100000", "-v")
 $FlashArgs += @("-rst")
 
 & $CubeProg $FlashArgs
 
-Write-Host "--- Fertig! Drücke ggf. Reset am Board. ---" -ForegroundColor Green
+Write-Host "" 
+Write-Host "--- Flashen und Verifizieren abgeschlossen ---" -ForegroundColor Green
+Write-Host "Hinweis: Der abschließende MCU-Reset kann im Development Mode mit" -ForegroundColor Yellow
+Write-Host "'Unable to run MCU' / Fehlercode 32 enden. Das bedeutet nicht, dass" -ForegroundColor Yellow
+Write-Host "das Flashen fehlgeschlagen ist, sofern beide Downloads verifiziert wurden." -ForegroundColor Yellow
+Write-Host "Für den Start aus dem externen Flash: BOOT1 auf 'Boot from flash' umstellen" -ForegroundColor Cyan
+Write-Host "und danach den Reset-Taster drücken oder das Board neu einschalten." -ForegroundColor Cyan
