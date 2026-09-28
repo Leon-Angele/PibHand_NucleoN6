@@ -320,8 +320,7 @@ class HandControlApp:
         self.sliders_initialized = False
         self.slider_vars = [tk.DoubleVar(value=0.0) for _ in AXIS_NAMES]
         self.slider_labels = [tk.StringVar(value="0.0 %") for _ in AXIS_NAMES]
-        self.pos_force_enabled = [tk.BooleanVar(value=False) for _ in AXIS_NAMES]
-        self.pos_force_values = [tk.StringVar(value="1.0") for _ in AXIS_NAMES]
+        self.position_force_labels = [tk.StringVar(value="-") for _ in AXIS_NAMES]
         self._build_ui()
         self._refresh_ports()
         self._set_controls_enabled(False)
@@ -392,9 +391,7 @@ class HandControlApp:
         ttk.Label(sliders, text="Achse", width=20).grid(row=0, column=0, sticky=tk.W)
         ttk.Label(sliders, text="Zielposition").grid(row=0, column=1)
         ttk.Label(sliders, text="Wert", width=10).grid(row=0, column=2)
-        ttk.Label(sliders, text="Kraft bei POS (nur 1..4)").grid(
-            row=0, column=3, columnspan=2
-        )
+        ttk.Label(sliders, text="Gemessene Kraft").grid(row=0, column=3)
         sliders.columnconfigure(1, weight=1)
         for axis, name in enumerate(AXIS_NAMES):
             ttk.Label(sliders, text=f"{axis}: {name}").grid(
@@ -415,22 +412,9 @@ class HandControlApp:
             ttk.Label(sliders, textvariable=self.slider_labels[axis], width=10).grid(
                 row=axis + 1, column=2
             )
-            if axis in range(1, 5):
-                check = ttk.Checkbutton(
-                    sliders, text="mit Kraft", variable=self.pos_force_enabled[axis]
-                )
-                check.grid(row=axis + 1, column=3, padx=5)
-                spin = ttk.Spinbox(
-                    sliders,
-                    from_=0.0,
-                    to=5.0,
-                    increment=0.1,
-                    textvariable=self.pos_force_values[axis],
-                    width=7,
-                )
-                spin.grid(row=axis + 1, column=4, padx=5)
-                ttk.Label(sliders, text="N").grid(row=axis + 1, column=5, sticky=tk.W)
-                self.command_widgets.extend((check, spin))
+            ttk.Label(
+                sliders, textvariable=self.position_force_labels[axis], width=12
+            ).grid(row=axis + 1, column=3, padx=5)
 
         poses = ttk.LabelFrame(parent, text="Posen", padding=10)
         poses.pack(fill=tk.X, pady=(12, 0))
@@ -680,13 +664,8 @@ class HandControlApp:
             messagebox.showerror("Ungueltige Eingabe", str(exc))
 
     def _send_position(self, axis: int) -> None:
-        force = (
-            self.pos_force_values[axis].get()
-            if self.pos_force_enabled[axis].get()
-            else None
-        )
         self._checked_send(
-            lambda: position_command(axis, self.slider_vars[axis].get(), force)
+            lambda: position_command(axis, self.slider_vars[axis].get())
         )
 
     def _send_pose(self) -> None:
@@ -762,8 +741,9 @@ class HandControlApp:
             setpoint = (
                 f"{status.force_setpoint[axis - 1]:.2f}" if axis in range(1, 5) else "-"
             )
-            measured = f"{status.force_measured[axis]:.2f}" if axis < 5 else "-"
+            measured = f"{status.force_measured[axis]:.2f} N" if axis < 5 else "-"
             adc = str(status.adc_raw[axis]) if axis < 5 else "-"
+            self.position_force_labels[axis].set(measured)
             self.status_tree.item(
                 str(axis),
                 values=(
