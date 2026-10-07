@@ -39,6 +39,7 @@ public:
     enum class CommandType : uint8_t {
         Pose,
         SinglePosition,
+        DirectServoPosition,
         ForceAll,
         ForceFinger,
         AdmittanceOn,
@@ -57,6 +58,8 @@ public:
         CommandType type = CommandType::Unknown;
         HandControl::GripType grip = HandControl::GripType::Open;
         HandControl::Finger finger = HandControl::Finger::Thumb;
+        uint8_t servo_id = 0;
+        uint16_t servo_position_ticks = 0;
         float position_percent = 0.0f;
         float force_newton = 0.0f;
         uint16_t speed_deg_per_s = 0;

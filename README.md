@@ -1,7 +1,7 @@
 # PIB Hand Control
 
-Firmware fuer eine einzelne Roboterhand mit sechs STS3215-Servos auf dem
-NUCLEO-N657X0-Q.
+Firmware fuer eine einzelne Roboterhand mit sechs geregelten STS3215-Servos
+und zwei direkt angesteuerten Zusatzservos auf dem NUCLEO-N657X0-Q.
 
 Die Hand kann entweder positionsgefuehrt oder mit einer individuellen
 Admittanzregelung fuer vier Finger betrieben werden. Der Daumen bleibt als
@@ -65,6 +65,8 @@ Die ADC-Reihenfolge ist:
 | Ringfinger | 3 | 4 | FSR 3 | Position + Admittanz |
 | Kleiner Finger | 4 | 5 | FSR 4 | Position + Admittanz |
 | Daumenrotation | 5 | 6 | keiner | Position |
+| Handgelenk | - | 7 | keiner | direkte Tick-Position |
+| Handrotation | - | 8 | keiner | direkte Tick-Position |
 
 Positionen werden als Prozent der konfigurierten Achsbewegung gesendet:
 
@@ -155,6 +157,8 @@ POSE:4:1.0\r\n
 ADM:ON\r\n
 POS:1:50:1.0\r\n
 STATUS:STREAM:10\r\n
+SERVO:7:2047\r\n
+SERVO:8:3000\r\n
 ```
 
 Alle Befehle sind ASCII-Zeilen und werden mit `LF`, `CR` oder `CRLF`
@@ -163,9 +167,10 @@ steuert genau eine konfigurierte Hand.
 
 ### Python-GUI
 
-Die Tkinter-GUI bietet sechs Positionsachsen einschliesslich Daumenrotation,
-Posen, Kraft-/Admittanzsteuerung und die vollstaendige Statusanzeige. Python
-3.10 oder neuer wird empfohlen.
+Die Tkinter-GUI bietet sechs geregelte Positionsachsen einschliesslich
+Daumenrotation, zwei direkte Zusatzservo-Steuerungen fuer ID7/ID8, Posen,
+Kraft-/Admittanzsteuerung und die vollstaendige Statusanzeige. Python 3.10 oder
+neuer wird empfohlen.
 
 ```powershell
 py -m venv .venv

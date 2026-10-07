@@ -242,6 +242,21 @@ bool SerialCommander::parseCommand(const uint8_t* data, size_t len,
         return true;
     }
 
+    if (equalsIgnoreCase(tokens[0], "SERVO")) {
+        unsigned long servo_id = 0;
+        unsigned long position = 0;
+        if (count != 3U || !parseUnsigned(tokens[1], servo_id) ||
+            (servo_id != WRIST_SERVO_ID && servo_id != HAND_ROTATION_SERVO_ID) ||
+            !parseUnsigned(tokens[2], position) ||
+            position < DIRECT_SERVO_MIN_TICKS || position > DIRECT_SERVO_MAX_TICKS) {
+            return false;
+        }
+        out.servo_id = static_cast<uint8_t>(servo_id);
+        out.servo_position_ticks = static_cast<uint16_t>(position);
+        out.type = ICommandExecutor::CommandType::DirectServoPosition;
+        return true;
+    }
+
     if (equalsIgnoreCase(tokens[0], "FORCE")) {
         if (count != 3U || !parseFloat(tokens[2], value) || value < 0.0f || value > DEFAULT_FORCE_LIMIT_N) return false;
         out.force_newton = value;

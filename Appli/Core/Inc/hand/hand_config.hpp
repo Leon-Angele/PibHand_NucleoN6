@@ -1,6 +1,6 @@
 /**
  * @file hand_config.hpp
- * @brief Single-hand configuration for six STS3215 axes.
+ * @brief Single-hand configuration for six regulated axes and two direct servos.
  */
 #ifndef HAND_CONFIG_HPP
 #define HAND_CONFIG_HPP
@@ -83,8 +83,14 @@ inline constexpr float DEFAULT_ADMITTANCE_STIFFNESS_N_PER_PERCENT = 0.1f;
 inline constexpr float DEFAULT_ADMITTANCE_NATURAL_FREQUENCY_HZ = 3.0f;
 inline constexpr float CONTROL_DT_S = 0.002f;
 
+/* Auxiliary servos are addressed directly and are not HandController axes. */
+inline constexpr uint8_t WRIST_SERVO_ID = 7;
+inline constexpr uint8_t HAND_ROTATION_SERVO_ID = 8;
+inline constexpr uint16_t DIRECT_SERVO_MIN_TICKS = 0;
+inline constexpr uint16_t DIRECT_SERVO_MAX_TICKS = 4095;
+
 inline constexpr std::array<FingerConfig, FINGER_COUNT> AxisSettings = {{
-    {"Thumb",          1, 4095, 0},
+    {"Thumb",          1, 4095, 2300},
     {"Index",          2, 4095, 0},
     {"Middle",         3, 4095, 400},
     {"Ring",           4, 4095, 0},

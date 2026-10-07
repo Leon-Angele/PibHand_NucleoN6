@@ -28,6 +28,8 @@ AXIS_NAMES = (
     "Kleiner Finger",
     "Daumenrotation",
 )
+AUX_SERVO_NAMES = ("Handgelenk", "Handrotation")
+AUX_SERVO_IDS = (7, 8)
 POSE_NAMES = (
     "Open",
     "Spitzgriff / Zeigen",
@@ -87,6 +89,12 @@ def position_command(axis: int, percent: float, force: float | None = None) -> s
             raise ValueError("Ein POS-Kraftwert ist nur fuer Finger 1 bis 4 erlaubt.")
         command += f":{_format_number(_number(force, 0.0, 5.0, 'Kraft'))}"
     return command
+
+
+def servo_command(servo_id: int, ticks: int) -> str:
+    servo_id = _integer(servo_id, 7, 8, "Servo-ID")
+    ticks = _integer(ticks, 0, 4095, "Servo-Ticks")
+    return f"SERVO:{servo_id}:{ticks}"
 
 
 def pose_command(pose: int, force: float | None = None) -> str:
@@ -321,6 +329,8 @@ class HandControlApp:
         self.slider_vars = [tk.DoubleVar(value=0.0) for _ in AXIS_NAMES]
         self.slider_labels = [tk.StringVar(value="0.0 %") for _ in AXIS_NAMES]
         self.position_force_labels = [tk.StringVar(value="-") for _ in AXIS_NAMES]
+        self.aux_servo_vars = [tk.DoubleVar(value=2047.0) for _ in AUX_SERVO_IDS]
+        self.aux_servo_labels = [tk.StringVar(value="2047") for _ in AUX_SERVO_IDS]
         self._build_ui()
         self._refresh_ports()
         self._set_controls_enabled(False)
@@ -445,6 +455,50 @@ class HandControlApp:
         send = self._command_button(poses, "Pose anfahren", self._send_pose)
         send.grid(row=0, column=4, padx=12)
         self.command_widgets.extend((pose_force_check, pose_force))
+
+        direct = ttk.LabelFrame(
+            parent, text="Zusatzservos - direkte Tick-Ansteuerung, ohne Regelung", padding=10
+        )
+        direct.pack(fill=tk.X, pady=(12, 0))
+        direct.columnconfigure(1, weight=1)
+        ttk.Label(direct, text="Servo").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(direct, text="Position (0..4095)").grid(row=0, column=1)
+        ttk.Label(direct, text="Ticks", width=8).grid(row=0, column=2)
+        for index, (servo_id, name) in enumerate(zip(AUX_SERVO_IDS, AUX_SERVO_NAMES)):
+            row = index + 1
+            ttk.Label(direct, text=f"ID {servo_id}: {name}").grid(
+                row=row, column=0, sticky=tk.W, pady=5
+            )
+            scale = ttk.Scale(
+                direct,
+                from_=0,
+                to=4095,
+                variable=self.aux_servo_vars[index],
+                command=lambda value, i=index: self.aux_servo_labels[i].set(
+                    f"{float(value):.0f}"
+                ),
+            )
+            scale.grid(row=row, column=1, sticky=tk.EW, padx=8)
+            scale.bind(
+                "<ButtonRelease-1>",
+                lambda _event, i=index: self._send_aux_servo(i),
+            )
+            spin = ttk.Spinbox(
+                direct,
+                from_=0,
+                to=4095,
+                increment=1,
+                textvariable=self.aux_servo_vars[index],
+                width=8,
+            )
+            spin.grid(row=row, column=2, padx=5)
+            self._command_button(
+                direct, "Senden", lambda i=index: self._send_aux_servo(i)
+            ).grid(row=row, column=3, padx=(8, 0))
+            ttk.Label(direct, textvariable=self.aux_servo_labels[index], width=8).grid(
+                row=row, column=4
+            )
+            self.command_widgets.extend((scale, spin))
 
     def _build_control_tab(self, parent: ttk.Frame) -> None:
         force_frame = ttk.LabelFrame(parent, text="Kraftsollwerte", padding=10)
@@ -666,6 +720,11 @@ class HandControlApp:
     def _send_position(self, axis: int) -> None:
         self._checked_send(
             lambda: position_command(axis, self.slider_vars[axis].get())
+        )
+
+    def _send_aux_servo(self, index: int) -> None:
+        self._checked_send(
+            lambda: servo_command(AUX_SERVO_IDS[index], self.aux_servo_vars[index].get())
         )
 
     def _send_pose(self) -> None:

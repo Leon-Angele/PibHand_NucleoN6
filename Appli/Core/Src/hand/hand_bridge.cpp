@@ -26,6 +26,7 @@ static HandController hand(servoBus);
 enum class ServoTransaction : uint8_t {
     None,
     PositionWrite,
+    DirectPositionWrite,
     TorqueWrite,
     PositionRead,
     CurrentRead
@@ -34,6 +35,9 @@ enum class ServoTransaction : uint8_t {
 static bool servo_port_ready = false;
 static ServoTransaction servo_transaction = ServoTransaction::None;
 static uint32_t position_sequence_in_flight = 0;
+static bool direct_position_pending = false;
+static uint8_t direct_position_id = 0;
+static uint16_t direct_position_ticks = 0;
 static uint8_t torque_index_in_flight = 0;
 static uint32_t torque_generation = 0;
 static uint32_t torque_generation_in_flight = 0;
@@ -261,6 +265,11 @@ public:
                     if (accepted) signalPoseAccepted();
                     return result(accepted);
                 }
+            case CommandType::DirectServoPosition:
+                direct_position_id = command.servo_id;
+                direct_position_ticks = command.servo_position_ticks;
+                direct_position_pending = true;
+                return Result::Success;
             case CommandType::ForceAll:
                 return result(hand.setForceAll(command.force_newton));
             case CommandType::ForceFinger:
@@ -338,6 +347,7 @@ void hand_bridge_init(void)
     servo_port_ready = servoPort.openPort();
     if (!servo_port_ready) signalSerialError();
     hand.setTorqueLimit(DEFAULT_TORQUE_LIMIT_PERCENT);
+    direct_position_pending = false;
     torque_update_pending = servo_port_ready;
     torque_update_index = 0;
 }
@@ -399,6 +409,8 @@ void hand_bridge_service(void)
             hand.markOutputSent(position_sequence_in_flight);
             feedback_preferred = true;
             servo_transaction = ServoTransaction::None;
+        } else if (servo_transaction == ServoTransaction::DirectPositionWrite) {
+            servo_transaction = ServoTransaction::None;
         } else if (servo_transaction == ServoTransaction::TorqueWrite) {
             if (torque_generation == torque_generation_in_flight &&
                 torque_update_index == torque_index_in_flight) {
@@ -424,6 +436,19 @@ void hand_bridge_service(void)
             torque_index_in_flight = torque_update_index;
             torque_generation_in_flight = torque_generation;
             servo_transaction = ServoTransaction::TorqueWrite;
+        } else {
+            signalSerialError();
+        }
+    }
+
+    if (servo_transaction == ServoTransaction::None && !torque_update_pending &&
+        direct_position_pending && servoBus.getState() == BusState::IDLE) {
+        const uint8_t id = direct_position_id;
+        const uint16_t position = direct_position_ticks;
+        const uint16_t time_ms = 10U;
+        if (servoBus.syncWritePositions(&id, &position, &time_ms, 1U)) {
+            direct_position_pending = false;
+            servo_transaction = ServoTransaction::DirectPositionWrite;
         } else {
             signalSerialError();
         }
@@ -495,6 +520,19 @@ void hand_bridge_ping_all_servos(void)
         const bool online = servoBus.pingServo(Hand::getServoID(finger), 100);
         std::printf("  [%u] %s (ID %u): %s\r\n", static_cast<unsigned>(i),
                     Hand::getAxisConfig(finger).name.data(), Hand::getServoID(finger),
+                    online ? "OK" : "TIMEOUT");
+        HAL_Delay(20);
+    }
+    const struct {
+        uint8_t id;
+        const char* name;
+    } direct_servos[] = {
+        {WRIST_SERVO_ID, "Wrist"},
+        {HAND_ROTATION_SERVO_ID, "HandRotation"},
+    };
+    for (const auto& servo : direct_servos) {
+        const bool online = servoBus.pingServo(servo.id, 100);
+        std::printf("  [direct] %s (ID %u): %s\r\n", servo.name, servo.id,
                     online ? "OK" : "TIMEOUT");
         HAL_Delay(20);
     }
