@@ -45,6 +45,37 @@ Der Servo-Readback laeuft waehrend eines aktiven Statusstreams. Eine einzelne
 erst danach. TIM6 taktet die FSR-Verarbeitung; ADC1 wird fuer jede Scanfolge aus
 dem Mainloop per Software neu gestartet.
 
+## Pinout und Verdrahtung
+
+### NUCLEO CN14 zum Waveshare Servo Driver Board
+
+Die UART-Leitungen des CN14 mit den gleich beschrifteten Anschluessen des
+Waveshare-Servo-Driver-Boards verbinden. TX bleibt TX und RX bleibt RX; die
+Leitungen werden hier nicht gekreuzt. Eine gemeinsame Masse ist erforderlich.
+
+| NUCLEO CN14 / Signal | Waveshare Servo Driver Board |
+|---|---|
+| TX (USART3_TX, PD8) | TX |
+| RX (USART3_RX, PD9) | RX |
+| GND | GND |
+
+### Kraftsensoren an CN4
+
+Die analogen Ausgaenge der fuenf FSR-Kraftsensoren an CN4 A0 bis A4 anschliessen.
+Die Reihenfolge muss der Firmware-Zuordnung entsprechen:
+
+| CN4-Eingang | Sensor | MCU-ADC-Eingang | MCU-Pin |
+|---|---|---|---|
+| A0 | Daumen | ADC1_INP5 | PA8 |
+| A1 | Zeigefinger | ADC1_INP10 | PA9 |
+| A2 | Mittelfinger | ADC1_INP16 | PF3 |
+| A3 | Ringfinger | ADC1_INP11 | PA10 |
+| A4 | Kleiner Finger | ADC1_INP13 | PA12 |
+
+Die FSR-Sensoren benoetigen jeweils eine Spannungsteilerschaltung; deren
+Ausgang kommt an den jeweiligen Analogeingang. Sensor- und NUCLEO-Masse muessen
+verbunden sein.
+
 Die ADC-Reihenfolge ist:
 
 | FSR-Index | Finger | ADC-Kanal | Pin |
